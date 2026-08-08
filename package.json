@@ -1,0 +1,61 @@
+{
+  "name": "cppeditor",
+  "version": "0.0.1",
+  "description": "更现代的c++编辑器",
+  "main": "main.js",
+  "author": "cyp",
+  "license": "GNUV3",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cr-ziji/CppEditor.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "postinstall": "electron-builder install-app-deps",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.56.0",
+    "vscode-jsonrpc": "^9.0.1",
+    "vscode-languageserver-protocol": "^3.18.2"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "electronLanguages": [
+      "zh-CN"
+    ],
+    "files": [
+      "**/*",
+      "!resources/clangd/**",
+      "!resources/mingw/**"
+    ],
+    "extraResources": [
+      {
+        "from": "./resources/clangd",
+        "to": "clangd"
+      },
+      {
+        "from": "./resources/mingw",
+        "to": "mingw"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052"
+    }
+  }
+}
