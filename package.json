@@ -46,7 +46,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "icon.svg"
+      "icon": "icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -61,17 +61,17 @@
       {
         "ext": "c",
         "name": "C Source File",
-        "icon": "resources/icons/c.svg"
+        "icon": "resources/icons/c.ico"
       },
       {
         "ext": "cpp",
         "name": "C++ Source File",
-        "icon": "resources/icons/cpp.svg"
+        "icon": "resources/icons/cpp.ico"
       },
       {
         "ext": "h",
         "name": "C/C++ Header File",
-        "icon": "resources/icons/h.svg"
+        "icon": "resources/icons/h.ico"
       }
     ]
   }
