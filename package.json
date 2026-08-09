@@ -46,7 +46,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "icon.png"
+      "icon": "icon.svg"
     },
     "nsis": {
       "oneClick": false,
@@ -56,6 +56,23 @@
         "zh_CN"
       ],
       "language": "2052"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": "c",
+        "name": "C Source File",
+        "icon": "resources/icons/c.svg"
+      },
+      {
+        "ext": "cpp",
+        "name": "C++ Source File",
+        "icon": "resources/icons/cpp.svg"
+      },
+      {
+        "ext": "h",
+        "name": "C/C++ Header File",
+        "icon": "resources/icons/h.svg"
+      }
+    ]
   }
 }

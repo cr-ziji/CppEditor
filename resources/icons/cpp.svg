@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220">
+    <text x="70" y="110" font-family="Arial, sans-serif" font-weight="900" font-size="180"
+          fill="#519aba" text-anchor="middle" dominant-baseline="central">C</text>
+    <text x="147" y="110" font-family="Arial, sans-serif" font-weight="900" font-size="90"
+          fill="#519aba" text-anchor="middle" dominant-baseline="central">+</text>
+    <text x="195" y="110" font-family="Arial, sans-serif" font-weight="900" font-size="70"
+          fill="#519aba" text-anchor="middle" dominant-baseline="central">+</text>
+</svg>

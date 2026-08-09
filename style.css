@@ -1,0 +1,228 @@
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+    background: #1e1e1e;
+    color: #cccccc;
+}
+
+body {
+    display: flex;
+}
+
+#textframe{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    flex-grow: 1;
+}
+
+#tabbar{
+    height: 35px;
+    display: flex;
+    border-bottom: 1px solid #3c3c3c;
+    padding: 0 7px;
+}
+
+#tabbar .tab{
+    /*border: 1px solid #0078d4;*/
+    border-radius: 5px;
+    margin: 3px;
+    display: flex;
+    padding: 2px 4px;
+    align-items: center;
+}
+
+#tabbar .tab:hover{
+    background-color: #38393a;
+}
+
+#tabbar .tab.active{
+    background-color: #38393a;
+}
+
+#tabbar .tab img{
+    width: 20px;
+    margin-right: 2px;
+}
+
+#tabbar .tab span{
+    font-size: 15px;
+    display: block;
+}
+
+#tabbar .tab button{
+    display: block;
+    border: none;
+    background: none;
+    color: #cccccc;
+    padding: 0;
+    width: 15px;
+    height: 15px;
+    font-size: 15px;
+    margin-left: 2px;
+}
+
+#editor {
+    flex-grow: 1;
+}
+
+/* ------------------------------------------------------------------
+ * 底部状态栏
+ * ------------------------------------------------------------------ */
+#statusbar {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 12px;
+    box-sizing: border-box;
+    background: #252526;
+    border-top: 1px solid #3c3c3c;
+    font-size: 12px;
+    color: #9d9d9d;
+    user-select: none;
+    white-space: nowrap;
+}
+
+#statusbar .item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#statusbar .spacer {
+    flex: 1;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #808080;
+    flex-shrink: 0;
+    transition: background-color 0.2s ease;
+}
+
+.status-dot.connecting {
+    background: #d7ba7d;
+    animation: pulse 1s ease-in-out infinite;
+}
+
+.status-dot.connected {
+    background: #89d185;
+}
+
+.status-dot.error,
+.status-dot.offline {
+    background: #f48771;
+}
+
+.status-dot.warning {
+    background: #d7ba7d;
+}
+
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
+#lsp-status-text {
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#diag-status {
+    color: #cccccc;
+}
+
+#diag-status .err {
+    color: #f48771;
+}
+
+#diag-status .warn {
+    color: #d7ba7d;
+}
+
+#cursor-status {
+    color: #9d9d9d;
+}
+
+#file-status {
+    color: #9d9d9d;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#fileframe{
+    width: 300px;
+    height: 100%;
+    flex-shrink: 0;
+}
+
+#resizer{
+    width: 4px;
+    height: 100%;
+    flex-shrink: 0;
+    border-right: 1px solid #3c3c3c;
+    cursor: ew-resize;
+}
+
+#resizer:hover{
+    background-color: #0078d4;
+}
+
+#fileframe{
+    overflow: hidden auto;
+}
+
+#fileframe .folder, #fileframe .file{
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+#fileframe .folder{
+    padding-left: 20px;
+    position: relative;
+}
+
+#fileframe .folder > .expand{
+    content: '>';
+    position: absolute;
+    top: -1.5px;
+    left: 5px;
+    cursor: pointer;
+}
+
+#fileframe .folder.expanded > .expand{
+    transform: rotate(90deg);
+}
+
+#fileframe .folder > .children{
+    width: 100%;
+}
+
+#fileframe .folder > img, #fileframe .file > img{
+    width: 20px;
+    margin-right: 2px;
+}
+
+#fileframe .folder > span, #fileframe .file > span{
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

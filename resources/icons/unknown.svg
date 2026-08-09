@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20 -20 110 120" width="220" height="220">
+    <!-- 文件背景（折角效果） - 白色 -->
+    <path d="M 8 0 L 44 0 L 64 20 L 64 72 C 64 76 60 80 56 80 L 8 80 C 4 80 0 76 0 72 L 0 8 C 0 4 4 0 8 0 Z" fill="#ffffff" stroke="#cccccc" stroke-width="1.5"/>
+    <path d="M 44 0 L 44 20 L 64 20 Z" fill="#e8e8e8" stroke="#cccccc" stroke-width="1.5"/>
+
+    <!-- 文件名占位 - 黑色 -->
+    <text x="17" y="65" font-size="60" fill="#000000" font-family="sans-serif">?</text>
+</svg>

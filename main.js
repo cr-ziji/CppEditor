@@ -200,7 +200,7 @@ function buildClangdArgs() {
   ];
 }
 
-const SOURCE_EXTS = ['.c', '.cpp', '.cc', '.cxx', '.c++'];
+const SOURCE_EXTS = ['.c', '.cpp'];
 
 // 递归收集项目目录下的所有 C/C++ 源文件，供 compile_commands.json 使用
 function findSourceFiles(dir, maxDepth = 8) {
@@ -248,10 +248,6 @@ function writeCompileCommands(projectDir) {
   }
 }
 
-function projectDirOf() {
-  return currentSavePath ? path.dirname(currentSavePath) : null;
-}
-
 // --- 项目目录监听 -------------------------------------------------------------
 // Windows 上 Node 18 的 fs.watch 不支持 recursive，故采用轻量轮询：
 // 定期对比源文件集合，增删发生时重建 compile_commands.json 并通知渲染进程，
@@ -293,7 +289,7 @@ function setsEqual(a, b) {
 
 function watchProject() {
   stopProjectWatcher();
-  const dir = projectDirOf();
+  const dir = projectPath;
   if (!dir || !fs.existsSync(dir)) {
     emitLog('[watcher] skip, dir=' + dir);
     return;
@@ -450,8 +446,7 @@ function startClangd() {
   let child;
   try {
     // 以项目目录作为 clangd 的工作目录，使其能发现 compile_commands.json 并索引整个项目
-    const projectDir = projectDirOf();
-    const cwd = projectDir && fs.existsSync(projectDir) ? projectDir : path.dirname(clangdPath);
+    const cwd = projectPath && fs.existsSync(projectPath) ? projectPath : path.dirname(clangdPath);
     child = spawn(clangdPath, buildClangdArgs(), {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -532,7 +527,7 @@ function setupIpc() {
       clangdPath: result.clangdPath,
       fallbackFlags: buildFallbackFlags(),
       offsetEncoding: 'utf-16',
-      projectDir: projectDirOf(),
+      projectDir: projectPath,
     };
   });
 
@@ -549,7 +544,7 @@ function setupIpc() {
 // 文件保存：Ctrl+S 将编辑器内容保存到用户选择的目录
 // 保存路径会被持久化到 settings.json，下次启动直接恢复并读取文件内容。
 // ---------------------------------------------------------------------------
-let currentSavePath = null;
+let projectPath = null;
 
 function settingsFile() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -559,7 +554,7 @@ function loadSettings() {
   try {
     const raw = fs.readFileSync(settingsFile(), 'utf8');
     const s = JSON.parse(raw);
-    if (s && typeof s.savePath === 'string') currentSavePath = s.savePath;
+    if (s && typeof s.projectPath === 'string') projectPath = s.projectPath;
   } catch {
     /* 无配置或解析失败时保持默认 */
   }
@@ -569,7 +564,7 @@ function persistSettings() {
   try {
     fs.writeFileSync(
       settingsFile(),
-      JSON.stringify({ savePath: currentSavePath }, null, 2),
+      JSON.stringify({ projectPath: projectPath }, null, 2),
       'utf8'
     );
   } catch {
@@ -594,15 +589,14 @@ function setupSaveIpc() {
   watchProject();
 
   ipcMain.handle('save:get-saved', () => {
-    if (!currentSavePath) return { ok: false };
-    const projectDir = path.dirname(currentSavePath);
+    if (!projectPath) return { ok: false };
     try {
-      if (!fs.existsSync(currentSavePath)) {
-        return { ok: false, missing: true, path: currentSavePath, projectDir };
+      if (!fs.existsSync(path.join(projectPath, 'main.cpp'))) {
+        return { ok: false, missing: true, path: path.join(projectPath, 'main.cpp'), projectPath };
       }
-      writeCompileCommands(projectDir);
-      const content = fs.readFileSync(currentSavePath, 'utf8');
-      return { ok: true, path: currentSavePath, projectDir, content };
+      writeCompileCommands(projectPath);
+      const content = fs.readFileSync(path.join(projectPath, 'main.cpp'), 'utf8');
+      return { ok: true, path: path.join(projectPath, 'main.cpp'), projectPath, content };
     } catch (err) {
       return { ok: false, message: '读取失败: ' + err.message };
     }
@@ -613,20 +607,20 @@ function setupSaveIpc() {
     if (typeof content !== 'string') {
       return { ok: false, message: '要保存的内容无效' };
     }
-    if (!currentSavePath) {
+    if (!projectPath) {
       const chosen = await chooseSaveDirectory();
       if (!chosen) return { ok: false, cancelled: true };
-      currentSavePath = path.join(chosen, 'main.cpp');
+      projectPath = chosen;
     }
     try {
-      fs.writeFileSync(currentSavePath, content, 'utf8');
-      writeCompileCommands(path.dirname(currentSavePath));
+      fs.writeFileSync(path.join(projectPath, 'main.cpp'), content, 'utf8');
+      writeCompileCommands(projectPath);
       persistSettings();
       watchProject();
       return {
         ok: true,
-        path: currentSavePath,
-        projectDir: path.dirname(currentSavePath),
+        path: path.join(projectPath, 'main.cpp'),
+        projectDir: projectPath,
       };
     } catch (err) {
       return { ok: false, message: '保存失败: ' + err.message };
@@ -637,12 +631,37 @@ function setupSaveIpc() {
   ipcMain.handle('save:choose-dir', async () => {
     const chosen = await chooseSaveDirectory();
     if (!chosen) return { ok: false, cancelled: true };
-    currentSavePath = path.join(chosen, 'main.cpp');
+    projectPath = chosen;
     writeCompileCommands(chosen);
     persistSettings();
     watchProject();
-    return { ok: true, path: currentSavePath, projectDir: chosen };
+    return { ok: true, path: path.join(projectPath, 'main.cpp'), projectDir: projectPath };
   });
+}
+
+async function readProjectDir(currentPath) {
+  // 读取目录，withFileTypes 能让我们直接知道是文件还是文件夹
+  const entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
+  const results = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(currentPath, entry.name);
+    if (entry.isDirectory()) {
+      // 递归调用，并展开子目录的结果
+      const nestedFiles = await readProjectDir(fullPath);
+      results.push(...nestedFiles);
+    } else {
+      // 是文件，直接记录其路径
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+function setupProjectIpc() {
+  ipcMain.handle('project:load', async () => {
+    return { projectDir: projectPath, files: await readProjectDir(projectPath) };
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -681,6 +700,7 @@ app.whenReady().then(() => {
   registerEditorProtocol();
   setupIpc();
   setupSaveIpc();
+  setupProjectIpc();
   createWindow();
 
   app.on('activate', () => {

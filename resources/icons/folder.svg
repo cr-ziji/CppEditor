@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220">
+    <path d="
+        M 36 40
+        l 40 0
+        c 8 1 9 19 17 20
+        l 52 0
+        a 8 8 90 0 1 8 8
+        l 0 64
+        a 8 8 90 0 1 -8 8
+        l -109 0
+        a 8 8 90 0 1 -8 -8
+        l 0 -84
+        a 8 8 90 0 1 8 -8
+        Z
+    " stroke="white" stroke-width="8" fill="#48494D" transform="scale(1.2)" />
+</svg>

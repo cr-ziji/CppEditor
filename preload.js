@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('editorAPI', {
     return () => ipcRenderer.removeListener('lsp:log', listener);
   },
 
+  loadProject: () => ipcRenderer.invoke('project:load'),
+
   // 将编辑器全文保存到「保存目录/main.cpp」；返回 { ok, path } 或 { ok:false, cancelled:true }。
   save: (content) => ipcRenderer.invoke('save:save', content),
 

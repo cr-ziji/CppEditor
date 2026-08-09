@@ -1,24 +1,5 @@
 'use strict';
 
-/* ============================================================================
- * CppEditor 渲染进程
- * ----------------------------------------------------------------------------
- * 职责：
- *   1. 通过 AMD 加载 Monaco Editor，创建 C++ 编辑器（语法高亮、自动缩进、
- *      括号补全）。
- *   2. 通过一个极简的 CommonJS 加载器，在浏览器环境加载
- *      vscode-jsonrpc / vscode-languageserver-protocol，并在本进程内创建
- *      LSP 消息连接（与主进程里的 clangd 通过 preload 暴露的 IPC 通信）。
- *   3. 实现 initialize / didOpen / didChange / completion / hover /
- *      publishDiagnostics 等 LSP 交互，驱动补全、错误波浪线与悬停提示。
- * ==========================================================================*/
-
-// ---------------------------------------------------------------------------
-// 0. 极简 CommonJS 加载器
-//    vscode-jsonrpc 与 vscode-languageserver-protocol 发布的是 CommonJS 代码。
-//    渲染进程没有 Node 的 require，这里用一个同步 XHR + Function 构造的迷你
-//    加载器来运行它们。所有模块都从 editor://app/vendor/... 加载（同源）。
-// ---------------------------------------------------------------------------
 (function () {
   const PKG = {
     'vscode-jsonrpc': {
@@ -781,41 +762,405 @@ async function provideHover(model, position) {
   }
 }
 
+function buildFileTree(paths, basePath = '') {
+  if (!paths || !Array.isArray(paths) || paths.length === 0) {
+    return [];
+  }
+
+  const root = {
+    name: 'root',
+    type: 'directory',
+    children: [],
+    path: basePath || 'root'
+  };
+
+  paths.forEach(filePath => {
+    // 生成相对路径
+    let relativePath = filePath;
+    if (basePath && filePath.startsWith(basePath)) {
+      relativePath = filePath.substring(basePath.length);
+      // 移除开头的路径分隔符
+      if (relativePath.startsWith('\\') || relativePath.startsWith('/')) {
+        relativePath = relativePath.substring(1);
+      }
+    }
+
+    // 统一使用 / 作为分隔符
+    const normalized = relativePath.replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(segment => segment !== '');
+
+    if (segments.length === 0) return;
+
+    let currentNode = root;
+    let currentPath = basePath;
+
+    segments.forEach((segment, index) => {
+      const isLast = index === segments.length - 1;
+
+      // 构建当前节点的完整路径
+      if (currentPath) {
+        currentPath = currentPath + '\\' + segment;
+      } else {
+        currentPath = segment;
+      }
+
+      // 查找是否已存在同名子节点
+      let child = currentNode.children.find(
+          node => node.name === segment
+      );
+
+      if (!child) {
+        // 判断是否为文件（简单启发式：最后一段且有扩展名）
+        const isFile = isLast && segment.includes('.');
+
+        child = {
+          name: segment,
+          type: isFile ? 'file' : 'directory',
+          children: isFile ? undefined : [],
+          path: currentPath,
+          // 额外信息
+          isFile: isFile,
+          extension: isFile ? getFileExtension(segment) : '',
+          size: 0, // 可以后续通过 fs.stat 获取
+        };
+
+        currentNode.children.push(child);
+      }
+
+      currentNode = child;
+    });
+  });
+
+  // 对子节点排序：目录在前，文件在后，按名称排序
+  function sortChildren(node) {
+    if (node.children && Array.isArray(node.children)) {
+      node.children.sort((a, b) => {
+        // 目录优先
+        if (a.type === 'directory' && b.type !== 'directory') return -1;
+        if (a.type !== 'directory' && b.type === 'directory') return 1;
+        // 按名称排序
+        return a.name.localeCompare(b.name);
+      });
+
+      // 递归排序子节点
+      node.children.forEach(child => {
+        if (child.type === 'directory') {
+          sortChildren(child);
+        }
+      });
+    }
+    return node;
+  }
+
+  // 对根节点的子节点排序
+  root.children.forEach(child => {
+    if (child.type === 'directory') {
+      sortChildren(child);
+    }
+  });
+
+  // 返回根节点的子节点（即顶层目录/文件）
+  return root.children;
+}
+
+function getFileExtension(filename) {
+  const lastDotIndex = filename.lastIndexOf('.');
+  if (lastDotIndex === -1) return '';
+  return filename.substring(lastDotIndex + 1);
+}
+
+function getFileType(node) {
+  if (node.type === 'directory') return 'folder'
+  const ext = getFileExtension(node.name);
+  const typeMap = {
+    'c': 'c',
+    'cpp': 'cpp',
+    'h': 'h',
+    'txt': 'txt',
+    'in': 'txt',
+    'out': 'txt',
+    'ans': 'txt'
+  }
+  return typeMap[ext] || 'unknown';
+}
+
+function getFileIcon(ext) {
+  const iconMap = {
+    'c': 'editor://app/resources/icons/c.svg',
+    'cpp': 'editor://app/resources/icons/cpp.svg',
+    'h': 'editor://app/resources/icons/h.svg',
+    'txt': 'editor://app/resources/icons/txt.svg',
+    'folder': 'editor://app/resources/icons/folder.svg',
+    'unknown': 'editor://app/resources/icons/unknown.svg'
+  };
+  return iconMap[ext] || 'editor://app/resources/icons/unkonwn.svg';
+}
+
+function expandFolder(node){
+  if (node.classList.contains('expanded')){
+    node.classList.remove('expanded');
+    node.querySelectorAll(':scope > div.children')[0].style.display = 'none';
+  }
+  else{
+    node.classList.add('expanded');
+    node.querySelectorAll(':scope > div.children')[0].style.display = 'block';
+  }
+}
+
+function rendererFileTree(paths, faNode) {
+  paths.forEach(path => {
+    const node = document.createElement('div');
+    if (path.type === 'directory'){
+      const nodeExpand = document.createElement('div');
+      nodeExpand.innerText = '>';
+      nodeExpand.classList.add('expand');
+      nodeExpand.addEventListener('click', () => expandFolder(node))
+      node.appendChild(nodeExpand);
+      node.classList.add('folder');
+    }
+    else node.classList.add('file');
+    const nodeImg = document.createElement('img');
+    nodeImg.src = getFileIcon(getFileType(path));
+    const nodeText = document.createElement('span');
+    nodeText.innerText = path.name;
+    node.appendChild(nodeImg);
+    node.appendChild(nodeText);
+    if (path.type === 'directory') {
+      const nodeChildren = document.createElement('div');
+      nodeChildren.classList.add('children');
+      nodeChildren.style.display = 'none';
+      rendererFileTree(path.children, nodeChildren);
+      node.appendChild(nodeChildren);
+    }
+    faNode.appendChild(node);
+    path.node = node;
+  })
+}
+
+let projectFileTree = [];
+let projectDom = null;
+
+async function loadProjectFile(){
+  const projectInf = await window.editorAPI.loadProject();
+  if (projectInf && projectInf.projectDir) projectDir = projectInf.projectDir;
+  const projectTree = buildFileTree(projectInf.files, projectInf.projectDir);
+  projectFileTree = projectTree.filter(path => path.name !== '.cache' && path.name !== 'compile_commands.json');
+  projectDom = document.createElement('div');
+  const projectExpand = document.createElement('div');
+  projectExpand.innerText = '>';
+  projectExpand.classList.add('expand');
+  projectExpand.addEventListener('click', () => expandFolder(projectDom))
+  projectDom.appendChild(projectExpand);
+  projectDom.classList.add('folder');
+  projectDom.classList.add('expanded');
+  const projectImg = document.createElement('img');
+  projectImg.src = getFileIcon('folder');
+  const projectText = document.createElement('span');
+  function dirname(p) {
+    p = p.replace(/\\/g, '/');
+    const i = p.lastIndexOf('/');
+    return i === -1 ? '' : p.slice(i+1);
+  }
+  projectText.innerText = dirname(projectInf.projectDir);
+  projectDom.appendChild(projectImg);
+  projectDom.appendChild(projectText);
+  const projectChildren = document.createElement('div');
+  projectChildren.classList.add('children');
+  rendererFileTree(projectFileTree, projectChildren);
+  projectDom.appendChild(projectChildren);
+  document.getElementById('fileframe').appendChild(projectDom);
+  // 树已就绪，应用暂存的文件变化
+  if (treePendingInfo) {
+    const pending = treePendingInfo;
+    treePendingInfo = null;
+    updateFileTree(pending);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5b. 文件树增量更新：根据项目目录变化（added/removed）增删树节点与 DOM
+// ---------------------------------------------------------------------------
+let treePendingInfo = null;
+
+function normalizeTreePath(p) {
+  return (p || '').replace(/\\/g, '/');
+}
+
+function shouldIgnoreTreePath(p) {
+  const norm = normalizeTreePath(p).toLowerCase();
+  const parts = norm.split('/');
+  if (parts.includes('.cache')) return true;
+  if (norm.endsWith('/compile_commands.json')) return true;
+  return false;
+}
+
+function compareTreeNodes(a, b) {
+  if (a.type === 'directory' && b.type !== 'directory') return -1;
+  if (a.type !== 'directory' && b.type === 'directory') return 1;
+  return a.name.localeCompare(b.name);
+}
+
+// 将新 DOM 节点按「目录优先 + 名称排序」插入容器
+function insertChildDomSorted(container, el, name, isDir) {
+  for (const sibling of container.children) {
+    if (!sibling.classList || (!sibling.classList.contains('folder') && !sibling.classList.contains('file'))) continue;
+    const sibIsDir = sibling.classList.contains('folder');
+    const sibSpan = sibling.querySelector('span');
+    const sibName = sibSpan ? sibSpan.textContent : '';
+    let before = false;
+    if (isDir && !sibIsDir) before = true;
+    else if (!isDir && sibIsDir) before = false;
+    else before = name.localeCompare(sibName) < 0;
+    if (before) {
+      container.insertBefore(el, sibling);
+      return;
+    }
+  }
+  container.appendChild(el);
+}
+
+// 在树中按绝对路径定位节点（不存在返回 null）
+function findTreeNode(nodes, fullPath) {
+  const target = normalizeTreePath(fullPath);
+  const queue = [...nodes];
+  while (queue.length) {
+    const n = queue.shift();
+    if (normalizeTreePath(n.path) === target) return n;
+    if (n.children) queue.push(...n.children);
+  }
+  return null;
+}
+
+// 将新增文件/目录的绝对路径插入数据树与 DOM（自动补齐中间目录）
+function insertFilePath(basePath, nodes, fullPath, rootContainer) {
+  let rel = fullPath;
+  if (basePath && normalizeTreePath(fullPath).startsWith(normalizeTreePath(basePath))) {
+    rel = fullPath.substring(basePath.length);
+    if (rel.startsWith('\\') || rel.startsWith('/')) rel = rel.substring(1);
+  }
+  const segments = normalizeTreePath(rel).split('/').filter(Boolean);
+  if (!segments.length) return;
+
+  let levelNodes = nodes;
+  let levelContainer = rootContainer;
+  let currentPath = basePath || '';
+
+  segments.forEach((segment, index) => {
+    const isLast = index === segments.length - 1;
+    currentPath = currentPath ? currentPath + '\\' + segment : segment;
+
+    let child = levelNodes.find((n) => n.name === segment);
+    if (!child) {
+      const isFile = isLast && segment.includes('.');
+      child = {
+        name: segment,
+        type: isFile ? 'file' : 'directory',
+        children: isFile ? undefined : [],
+        path: currentPath,
+        isFile,
+        extension: isFile ? getFileExtension(segment) : '',
+        size: 0,
+        node: null,
+      };
+      // 按排序规则插入数据数组
+      const idx = levelNodes.findIndex((n) => compareTreeNodes(child, n) < 0);
+      if (idx === -1) levelNodes.push(child);
+      else levelNodes.splice(idx, 0, child);
+
+      // 创建 DOM 节点
+      const el = document.createElement('div');
+      if (isFile) {
+        el.classList.add('file');
+      } else {
+        el.classList.add('folder');
+        const expand = document.createElement('div');
+        expand.innerText = '>';
+        expand.classList.add('expand');
+        expand.addEventListener('click', () => expandFolder(el));
+        el.appendChild(expand);
+      }
+      const img = document.createElement('img');
+      img.src = getFileIcon(isFile ? getFileType(child) : 'folder');
+      const text = document.createElement('span');
+      text.innerText = child.name;
+      el.appendChild(img);
+      el.appendChild(text);
+      if (!isFile) {
+        const childrenEl = document.createElement('div');
+        childrenEl.classList.add('children');
+        childrenEl.style.display = 'none';
+        el.appendChild(childrenEl);
+      }
+      child.node = el;
+      insertChildDomSorted(levelContainer, el, child.name, !isFile);
+    }
+
+    if (child.type === 'directory') {
+      levelNodes = child.children;
+      levelContainer = child.node ? child.node.querySelector(':scope > div.children') : null;
+    } else {
+      levelNodes = [];
+      levelContainer = null;
+    }
+  });
+}
+
+// 将已删除文件/目录从数据树与 DOM 中移除
+function removeFilePath(nodes, fullPath, rootContainer) {
+  const target = normalizeTreePath(fullPath);
+  const removeIn = (list, container) => {
+    for (let i = 0; i < list.length; i++) {
+      const n = list[i];
+      if (normalizeTreePath(n.path) === target) {
+        list.splice(i, 1);
+        if (n.node && n.node.parentNode) n.node.parentNode.removeChild(n.node);
+        return true;
+      }
+      if (n.type === 'directory') {
+        const childContainer = n.node ? n.node.querySelector(':scope > div.children') : null;
+        if (removeIn(n.children, childContainer)) {
+          // 子节点删空后父目录也一并移除
+          if (n.children.length === 0 && n.node && n.node.parentNode) {
+            const at = list.indexOf(n);
+            if (at !== -1) list.splice(at, 1);
+            n.node.parentNode.removeChild(n.node);
+          }
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  removeIn(nodes, rootContainer);
+}
+
+// 根据主进程推送的文件变化增量更新文件树
+function updateFileTree(info) {
+  if (!info) return;
+  if (!projectFileTree || !projectDom) {
+    // 树尚未构建完成，暂存事件，构建完成后补应用
+    treePendingInfo = {
+      added: [...((treePendingInfo && treePendingInfo.added) || []), ...(info.added || [])],
+      removed: [...((treePendingInfo && treePendingInfo.removed) || []), ...(info.removed || [])],
+    };
+    return;
+  }
+  const rootContainer = projectDom.querySelector(':scope > div.children');
+  if (!rootContainer) return;
+  for (const f of info.added || []) {
+    if (shouldIgnoreTreePath(f)) continue;
+    insertFilePath(projectDir, projectFileTree, f, rootContainer);
+  }
+  for (const f of info.removed || []) {
+    if (shouldIgnoreTreePath(f)) continue;
+    removeFilePath(projectFileTree, f, rootContainer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 6. 编辑器初始化
 // ---------------------------------------------------------------------------
-const DEFAULT_CODE = `#include <iostream>
-#include <vector>
-#include <cmath>
-#include <string>
-
-// 提示：输入 std:: 会触发 clangd 的代码补全；
-// 把鼠标悬停在函数名上可查看类型信息。
-
-struct Point {
-    double x;
-    double y;
-};
-
-double distance(const Point& a, const Point& b) {
-    double dx = a.x - b.x;
-    double dy = a.y - b.y;
-    return std::sqrt(dx * dx + dy * dy);
-}
-
-int main() {
-    std::vector<std::string> messages = {"Hello", "CppEditor"};
-    for (const auto& msg : messages) {
-        std::cout << msg << std::endl;
-    }
-
-    Point a{0, 0};
-    Point b{3, 4};
-    std::cout << "distance = " << distance(a, b) << std::endl;
-
-    return 0;
-}
-`;
+const DEFAULT_CODE = ``;
 
 let editor = null;
 
@@ -922,8 +1267,11 @@ function init() {
     if (line) log(line);
   });
 
+  loadProjectFile();
+
   // 项目目录文件增删：通知 clangd 重新索引（compile_commands.json 已在主进程重建）
   window.editorAPI.onProjectChanged((info) => {
+    updateFileTree(info);
     if (!lsp || !lsp.initialized || !info) return;
     const changes = [];
     for (const f of info.added || []) {
