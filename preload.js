@@ -44,4 +44,11 @@ contextBridge.exposeInMainWorld('editorAPI', {
 
   // 重新选择保存目录；返回 { ok, path } 或 { ok:false, cancelled:true }。
   chooseDirectory: () => ipcRenderer.invoke('save:choose-dir'),
+
+  // 订阅项目目录文件增删事件（{ projectDir, added, removed }）。返回取消订阅函数。
+  onProjectChanged: (callback) => {
+    const listener = (_event, info) => callback(info);
+    ipcRenderer.on('lsp:project-changed', listener);
+    return () => ipcRenderer.removeListener('lsp:project-changed', listener);
+  },
 });

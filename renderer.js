@@ -131,9 +131,33 @@ const APP_ROOT = (function () {
   } catch (e) { /* ignore */ }
   return IS_WIN ? 'C:/CppEditor' : '/tmp/cppeditor';
 })();
-const FILE_PATH = (APP_ROOT.replace(/\\/g, '/') + '/main.cpp').replace(/\/+/g, '/');
-const DOC_URI = 'file:///' + FILE_PATH;
-const ROOT_URI = 'file:///' + APP_ROOT.replace(/\\/g, '/');
+// 项目目录（保存目录）。未保存时为 null，使用应用根目录作为临时工作区。
+let projectDir = null;
+// 当前编辑文档对应的磁盘路径（首次保存后才有）
+let FILE_PATH = (APP_ROOT.replace(/\\/g, '/') + '/main.cpp').replace(/\/+/g, '/');
+let DOC_URI = 'file:///' + FILE_PATH;
+let ROOT_URI = 'file:///' + APP_ROOT.replace(/\\/g, '/');
+
+// 切换到某个项目目录，并让文档/工作区 URI 跟随它
+function applyProjectDir(dir, file) {
+  if (!dir) return;
+  projectDir = dir;
+  FILE_PATH = (dir.replace(/\\/g, '/') + '/main.cpp').replace(/\/+/g, '/');
+  DOC_URI = 'file:///' + FILE_PATH;
+  ROOT_URI = 'file:///' + dir.replace(/\\/g, '/');
+  if (file) savedPath = file;
+}
+
+function pathDirOf(p) {
+  if (!p) return null;
+  return p.replace(/\\/g, '/').replace(/\/[^/]*$/, '');
+}
+
+function pathEquals(a, b) {
+  const norm = (s) =>
+    (s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
 
 const MAX_RECONNECT = 3;
 const INIT_TIMEOUT_MS = 15000;
@@ -354,15 +378,44 @@ async function saveFile() {
     if (!result) return;
     if (result.cancelled) return;
     if (result.ok) {
-      savedPath = result.path;
+      const wasUnset = !projectDir;
+      const dirChanged = !pathEquals(result.projectDir, projectDir);
+      applyProjectDir(result.projectDir || pathDirOf(result.path), result.path);
       updateFileLabel();
       showSaveStatus('已保存: ' + result.path);
+      window.__cppeditor.saveInfo = { path: result.path, projectDir: result.projectDir };
+      window.__cppeditor._saveSeq = (window.__cppeditor._saveSeq || 0) + 1;
+
+      // 首次保存或更换目录：重建 model（URI 跟随项目目录）并重启 LSP，
+      // 让 clangd 以新项目根索引整个目录
+      if (wasUnset || dirChanged) {
+        log('saveFile: rebuild+restart (wasUnset=' + wasUnset + ' dirChanged=' + dirChanged + ' projectDir=' + projectDir + ')');
+        rebuildEditorModel();
+        reconnectAttempts = 0;
+        bootstrap();
+      } else {
+        log('saveFile: no dir change, skip restart');
+      }
     } else {
       showSaveStatus(result.message || '保存失败', true);
     }
   } catch (err) {
     showSaveStatus('保存失败: ' + err.message, true);
   }
+}
+
+// 项目目录变化时重建编辑器 model，让文档 URI 跟随新路径（内容不变）
+function rebuildEditorModel() {
+  const oldModel = editor.getModel();
+  const content = oldModel ? oldModel.getValue() : DEFAULT_CODE;
+  const model = monaco.editor.createModel(
+    content,
+    'cpp',
+    monaco.Uri.parse(DOC_URI)
+  );
+  if (editor.getModel() !== model) editor.setModel(model);
+  if (oldModel) oldModel.dispose();
+  updateFileLabel();
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +459,12 @@ function teardownLsp() {
     lsp = null;
   }
   serverCapabilities = null;
+  // 确保旧的 clangd 进程被真正停止，否则 start() 会因 isClangdRunning() 短路复用旧进程
+  try {
+    window.editorAPI.stop();
+  } catch {
+    /* ignore */
+  }
 }
 
 function registerHandlers(connection) {
@@ -433,6 +492,9 @@ async function bootstrap() {
 
   setLspState('connecting', '正在启动 clangd...');
 
+  // 先停掉旧连接与旧 clangd，再启动新的，避免两个 clangd 进程并存
+  teardownLsp();
+
   let config;
   try {
     config = await window.editorAPI.start();
@@ -447,8 +509,6 @@ async function bootstrap() {
   }
 
   fallbackFlags = config.fallbackFlags || [];
-
-  teardownLsp();
 
   const reader = new IPCReader();
   const writer = new IPCWriter();
@@ -477,7 +537,11 @@ async function bootstrap() {
         hover: { contentFormat: ['markdown', 'plaintext'] },
         publishDiagnostics: { relatedInformation: false },
       },
-      workspace: { workspaceFolders: false },
+      workspace: {
+        workspaceFolders: false,
+        // 声明客户端会发送 workspace/didChangeWatchedFiles 文件监听通知
+        didChangeWatchedFiles: { dynamicRegistration: false },
+      },
       // 让 clangd 以 UTF-16 计算字符偏移，与 Monaco 的坐标一致
       general: { positionEncodings: ['utf-16'] },
     },
@@ -507,6 +571,7 @@ async function bootstrap() {
   connection.sendNotification(proto.InitializedNotification.type, {});
   sendDidOpen();
   window.__cppeditor.stage = 'lsp-connected';
+  window.__cppeditor._bootSeq = (window.__cppeditor._bootSeq || 0) + 1;
   window.__cppeditor.serverCapabilities = Object.keys(serverCapabilities);
   setLspState('connected', 'clangd 已连接（C++ 智能提示就绪）');
 }
@@ -757,13 +822,15 @@ let editor = null;
 async function startEditor() {
   window.__cppeditor.stage = 'monaco-loaded';
 
-  // 启动时尝试恢复上次保存的文件内容
+  // 启动时尝试恢复上次保存的项目（目录 + 文件内容）
   let initialCode = DEFAULT_CODE;
   try {
     const saved = await window.editorAPI.getSaved();
     if (saved && saved.ok && typeof saved.content === 'string') {
       initialCode = saved.content;
-      savedPath = saved.path;
+      applyProjectDir(saved.projectDir || pathDirOf(saved.path), saved.path);
+    } else if (saved && saved.projectDir) {
+      applyProjectDir(saved.projectDir);
     }
   } catch (e) {
     /* 恢复失败时使用默认示例代码 */
@@ -853,6 +920,26 @@ function init() {
   window.editorAPI.onStatus(handleServerStatus);
   window.editorAPI.onLog((line) => {
     if (line) log(line);
+  });
+
+  // 项目目录文件增删：通知 clangd 重新索引（compile_commands.json 已在主进程重建）
+  window.editorAPI.onProjectChanged((info) => {
+    if (!lsp || !lsp.initialized || !info) return;
+    const changes = [];
+    for (const f of info.added || []) {
+      changes.push({ uri: 'file:///' + f.replace(/\\/g, '/'), type: 1 });
+    }
+    for (const f of info.removed || []) {
+      changes.push({ uri: 'file:///' + f.replace(/\\/g, '/'), type: 3 });
+    }
+    if (changes.length) {
+      lsp.connection.sendNotification('workspace/didChangeWatchedFiles', {
+        changes,
+      });
+    }
+    // clangd 收到 watcher 事件后不会主动重新诊断已打开的文档，
+    // 这里再对当前文档发一次 didChange，强制其重新解析并立即更新诊断
+    scheduleChange();
   });
 
   // Ctrl+S / Cmd+S 保存文件

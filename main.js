@@ -200,6 +200,135 @@ function buildClangdArgs() {
   ];
 }
 
+const SOURCE_EXTS = ['.c', '.cpp', '.cc', '.cxx', '.c++'];
+
+// 递归收集项目目录下的所有 C/C++ 源文件，供 compile_commands.json 使用
+function findSourceFiles(dir, maxDepth = 8) {
+  const out = [];
+  const walk = (d, depth) => {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const name = ent.name;
+      if (ent.isDirectory()) {
+        if (name.startsWith('.') || name === 'node_modules' || name === 'build' || name === 'out') continue;
+        walk(path.join(d, name), depth + 1);
+      } else if (ent.isFile() && SOURCE_EXTS.includes(path.extname(name).toLowerCase())) {
+        out.push(path.join(d, name));
+      }
+    }
+  };
+  walk(dir, 0);
+  return out;
+}
+
+// 在项目目录生成 compile_commands.json，让 clangd 以相同编译参数索引整个目录
+function writeCompileCommands(projectDir) {
+  try {
+    const flags = ['clang++', ...buildFallbackFlags()];
+    let files = findSourceFiles(projectDir);
+    if (!files.length) files = [path.join(projectDir, 'main.cpp')];
+    const entries = files.map((file) => ({
+      directory: projectDir,
+      file,
+      arguments: [...flags, file],
+    }));
+    fs.writeFileSync(
+      path.join(projectDir, 'compile_commands.json'),
+      JSON.stringify(entries, null, 2),
+      'utf8'
+    );
+  } catch {
+    /* 生成失败不影响保存 */
+  }
+}
+
+function projectDirOf() {
+  return currentSavePath ? path.dirname(currentSavePath) : null;
+}
+
+// --- 项目目录监听 -------------------------------------------------------------
+// Windows 上 Node 18 的 fs.watch 不支持 recursive，故采用轻量轮询：
+// 定期对比源文件集合，增删发生时重建 compile_commands.json 并通知渲染进程，
+// 渲染进程再向 clangd 发送 workspace/didChangeWatchedFiles 使其实时索引。
+let projectWatcher = null;
+
+// 监听快照取目录内所有文件（含 .h/.hpp 等头文件），而不仅是编译单元
+function snapshotProjectFiles(dir) {
+  const out = new Set();
+  const walk = (d, depth) => {
+    if (depth > 8) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const name = ent.name;
+      if (ent.isDirectory()) {
+        if (name.startsWith('.') || name === 'node_modules' || name === 'build' || name === 'out') continue;
+        walk(path.join(d, name), depth + 1);
+      } else if (ent.isFile()) {
+        out.add(path.join(d, name).replace(/\\/g, '/'));
+      }
+    }
+  };
+  walk(dir, 0);
+  return out;
+}
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) {
+    if (!b.has(v)) return false;
+  }
+  return true;
+}
+
+function watchProject() {
+  stopProjectWatcher();
+  const dir = projectDirOf();
+  if (!dir || !fs.existsSync(dir)) {
+    emitLog('[watcher] skip, dir=' + dir);
+    return;
+  }
+  let snapshot = snapshotProjectFiles(dir);
+  writeCompileCommands(dir);
+  projectWatcher = {
+    timer: setInterval(() => {
+      const next = snapshotProjectFiles(dir);
+      if (setsEqual(next, snapshot)) return;
+      const added = [...next].filter((f) => !snapshot.has(f));
+      const removed = [...snapshot].filter((f) => !next.has(f));
+      snapshot = next;
+      // 仅当编译单元集合变化时才需要重建编译数据库（.h 变化不影响）
+      const sourceExts = new Set(SOURCE_EXTS);
+      const hasSourceChange = [...added, ...removed].some((f) =>
+        sourceExts.has(path.extname(f).toLowerCase())
+      );
+      if (hasSourceChange) writeCompileCommands(dir);
+      emitToRenderer('lsp:project-changed', {
+        projectDir: dir,
+        added,
+        removed,
+      });
+    }, 1000),
+  };
+}
+
+function stopProjectWatcher() {
+  if (projectWatcher) {
+    clearInterval(projectWatcher.timer);
+    projectWatcher = null;
+  }
+}
+
 function emitToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
@@ -320,8 +449,11 @@ function startClangd() {
 
   let child;
   try {
+    // 以项目目录作为 clangd 的工作目录，使其能发现 compile_commands.json 并索引整个项目
+    const projectDir = projectDirOf();
+    const cwd = projectDir && fs.existsSync(projectDir) ? projectDir : path.dirname(clangdPath);
     child = spawn(clangdPath, buildClangdArgs(), {
-      cwd: path.dirname(clangdPath),
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -400,6 +532,7 @@ function setupIpc() {
       clangdPath: result.clangdPath,
       fallbackFlags: buildFallbackFlags(),
       offsetEncoding: 'utf-16',
+      projectDir: projectDirOf(),
     };
   });
 
@@ -458,15 +591,18 @@ async function chooseSaveDirectory() {
 function setupSaveIpc() {
   // 启动时恢复上次的保存路径与文件内容
   loadSettings();
+  watchProject();
 
   ipcMain.handle('save:get-saved', () => {
     if (!currentSavePath) return { ok: false };
+    const projectDir = path.dirname(currentSavePath);
     try {
       if (!fs.existsSync(currentSavePath)) {
-        return { ok: false, missing: true, path: currentSavePath };
+        return { ok: false, missing: true, path: currentSavePath, projectDir };
       }
+      writeCompileCommands(projectDir);
       const content = fs.readFileSync(currentSavePath, 'utf8');
-      return { ok: true, path: currentSavePath, content };
+      return { ok: true, path: currentSavePath, projectDir, content };
     } catch (err) {
       return { ok: false, message: '读取失败: ' + err.message };
     }
@@ -484,8 +620,14 @@ function setupSaveIpc() {
     }
     try {
       fs.writeFileSync(currentSavePath, content, 'utf8');
+      writeCompileCommands(path.dirname(currentSavePath));
       persistSettings();
-      return { ok: true, path: currentSavePath };
+      watchProject();
+      return {
+        ok: true,
+        path: currentSavePath,
+        projectDir: path.dirname(currentSavePath),
+      };
     } catch (err) {
       return { ok: false, message: '保存失败: ' + err.message };
     }
@@ -496,8 +638,10 @@ function setupSaveIpc() {
     const chosen = await chooseSaveDirectory();
     if (!chosen) return { ok: false, cancelled: true };
     currentSavePath = path.join(chosen, 'main.cpp');
+    writeCompileCommands(chosen);
     persistSettings();
-    return { ok: true, path: currentSavePath };
+    watchProject();
+    return { ok: true, path: currentSavePath, projectDir: chosen };
   });
 }
 
@@ -549,5 +693,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  stopProjectWatcher();
   stopClangd();
 });
