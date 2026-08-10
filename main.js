@@ -202,6 +202,11 @@ function buildClangdArgs() {
 
 const SOURCE_EXTS = ['.c', '.cpp'];
 
+// 图片扩展名：以二进制（base64）形式返回给渲染进程做图片预览
+const IMAGE_EXTS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.webp', '.svg',
+]);
+
 // 递归收集项目目录下的所有 C/C++ 源文件，供 compile_commands.json 使用
 function findSourceFiles(dir, maxDepth = 8) {
   const out = [];
@@ -254,9 +259,11 @@ function writeCompileCommands(projectDir) {
 // 渲染进程再向 clangd 发送 workspace/didChangeWatchedFiles 使其实时索引。
 let projectWatcher = null;
 
-// 监听快照取目录内所有文件（含 .h/.hpp 等头文件），而不仅是编译单元
+// 监听快照取目录内所有文件（含 .h/.hpp 等头文件）及各自的 mtime/size，
+// 以便区分新增 / 删除 / 内容修改。目录本身也纳入快照（isDirectory: true），
+// 这样空文件夹的创建 / 删除也能被感知并同步到文件树。
 function snapshotProjectFiles(dir) {
-  const out = new Set();
+  const out = new Map();
   const walk = (d, depth) => {
     if (depth > 8) return;
     let entries;
@@ -269,9 +276,19 @@ function snapshotProjectFiles(dir) {
       const name = ent.name;
       if (ent.isDirectory()) {
         if (name.startsWith('.') || name === 'node_modules' || name === 'build' || name === 'out') continue;
+        const fp = path.join(d, name).replace(/\\/g, '/');
+        // 目录的 mtime 会随内部增删而变化，这里固定为 0，
+        // 目录只参与「出现 / 消失」判断，不参与「内容修改」判断
+        out.set(fp, { mtimeMs: 0, size: 0, isDirectory: true });
         walk(path.join(d, name), depth + 1);
       } else if (ent.isFile()) {
-        out.add(path.join(d, name).replace(/\\/g, '/'));
+        const fp = path.join(d, name).replace(/\\/g, '/');
+        try {
+          const st = fs.statSync(path.join(d, name));
+          out.set(fp, { mtimeMs: st.mtimeMs, size: st.size, isDirectory: false });
+        } catch {
+          out.set(fp, { mtimeMs: 0, size: 0, isDirectory: false });
+        }
       }
     }
   };
@@ -281,8 +298,9 @@ function snapshotProjectFiles(dir) {
 
 function setsEqual(a, b) {
   if (a.size !== b.size) return false;
-  for (const v of a) {
-    if (!b.has(v)) return false;
+  for (const [p, info] of a) {
+    const other = b.get(p);
+    if (!other || other.mtimeMs !== info.mtimeMs || other.size !== info.size) return false;
   }
   return true;
 }
@@ -294,28 +312,55 @@ function watchProject() {
     emitLog('[watcher] skip, dir=' + dir);
     return;
   }
-  let snapshot = snapshotProjectFiles(dir);
+  const snapshot = snapshotProjectFiles(dir);
   writeCompileCommands(dir);
   projectWatcher = {
+    snapshot,
     timer: setInterval(() => {
       const next = snapshotProjectFiles(dir);
-      if (setsEqual(next, snapshot)) return;
-      const added = [...next].filter((f) => !snapshot.has(f));
-      const removed = [...snapshot].filter((f) => !next.has(f));
-      snapshot = next;
+      if (setsEqual(next, projectWatcher.snapshot)) return;
+      const added = [];
+      const removed = [];
+      const modified = [];
+      for (const [p, info] of next) {
+        const prev = projectWatcher.snapshot.get(p);
+        if (!prev) added.push({ path: p, isDirectory: !!info.isDirectory });
+        else if (prev.mtimeMs !== info.mtimeMs || prev.size !== info.size) modified.push({ path: p, isDirectory: !!info.isDirectory });
+      }
+      for (const p of projectWatcher.snapshot.keys()) {
+        if (!next.has(p)) {
+          const prevInfo = projectWatcher.snapshot.get(p);
+          removed.push({ path: p, isDirectory: !!(prevInfo && prevInfo.isDirectory) });
+        }
+      }
+      projectWatcher.snapshot = next;
       // 仅当编译单元集合变化时才需要重建编译数据库（.h 变化不影响）
       const sourceExts = new Set(SOURCE_EXTS);
-      const hasSourceChange = [...added, ...removed].some((f) =>
-        sourceExts.has(path.extname(f).toLowerCase())
+      const hasSourceChange = [...added, ...removed, ...modified].some((f) =>
+        sourceExts.has(path.extname(typeof f === 'object' ? f.path : f).toLowerCase())
       );
       if (hasSourceChange) writeCompileCommands(dir);
       emitToRenderer('lsp:project-changed', {
         projectDir: dir,
         added,
         removed,
+        modified,
       });
     }, 1000),
   };
+}
+
+// 应用自身写入文件后，同步更新 watcher 快照，避免下一轮轮询误报「内容修改」
+function updateSnapshotEntry(filePath) {
+  if (!projectWatcher || !projectWatcher.snapshot) return;
+  const resolved = path.resolve(filePath);
+  const p = resolved.replace(/\\/g, '/');
+  try {
+    const st = fs.statSync(resolved);
+    projectWatcher.snapshot.set(p, { mtimeMs: st.mtimeMs, size: st.size, isDirectory: false });
+  } catch {
+    /* ignore */
+  }
 }
 
 function stopProjectWatcher() {
@@ -614,6 +659,7 @@ function setupSaveIpc() {
     }
     try {
       fs.writeFileSync(path.join(projectPath, 'main.cpp'), content, 'utf8');
+      updateSnapshotEntry(path.join(projectPath, 'main.cpp'));
       writeCompileCommands(projectPath);
       persistSettings();
       watchProject();
@@ -647,12 +693,14 @@ async function readProjectDir(currentPath) {
   for (const entry of entries) {
     const fullPath = path.join(currentPath, entry.name);
     if (entry.isDirectory()) {
+      // 目录自身也加入结果，保证空文件夹也能在文件树中显示
+      results.push({ path: fullPath, isDirectory: true });
       // 递归调用，并展开子目录的结果
       const nestedFiles = await readProjectDir(fullPath);
       results.push(...nestedFiles);
     } else {
       // 是文件，直接记录其路径
-      results.push(fullPath);
+      results.push({ path: fullPath, isDirectory: false });
     }
   }
   return results;
@@ -660,8 +708,67 @@ async function readProjectDir(currentPath) {
 
 function setupProjectIpc() {
   ipcMain.handle('project:load', async () => {
-    return { projectDir: projectPath, files: await readProjectDir(projectPath) };
+    if (!projectPath) return { projectDir: null, files: [] };
+    try {
+      return { projectDir: projectPath, files: await readProjectDir(projectPath) };
+    } catch (err) {
+      return { projectDir: projectPath, files: [] };
+    }
   })
+}
+
+// ---------------------------------------------------------------------------
+// 文件读写：渲染进程打开项目树中的任意文件 / 保存当前标签页
+// ---------------------------------------------------------------------------
+function setupFileIpc() {
+  // 读取项目目录内的任意文件。文本返回 UTF-8 字符串，图片/二进制返回 base64。
+  ipcMain.handle('file:read', async (_event, filePath) => {
+    try {
+      const resolved = path.resolve(filePath);
+      if (!projectPath || !isWithin(projectPath, resolved)) {
+        return { ok: false, message: '路径不在当前项目目录内' };
+      }
+      const buf = await fs.promises.readFile(resolved);
+      const ext = path.extname(resolved).toLowerCase();
+      const image = IMAGE_EXTS.has(ext);
+      let binary = image;
+      if (!binary) {
+        // 经典启发式：存在 NUL 字节视为二进制
+        for (let i = 0; i < buf.length; i++) {
+          if (buf[i] === 0) { binary = true; break; }
+        }
+      }
+      return {
+        ok: true,
+        path: resolved,
+        ext,
+        mime: contentType(resolved),
+        binary,
+        size: buf.length,
+        content: binary ? buf.toString('base64') : buf.toString('utf8'),
+      };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+  });
+
+  // 将文本内容写回项目目录内的指定文件（配合当前激活标签页）
+  ipcMain.handle('file:save', async (_event, filePath, content) => {
+    if (typeof content !== 'string') {
+      return { ok: false, message: '要保存的内容无效' };
+    }
+    try {
+      const resolved = path.resolve(filePath);
+      if (!projectPath || !isWithin(projectPath, resolved)) {
+        return { ok: false, message: '路径不在当前项目目录内' };
+      }
+      fs.writeFileSync(resolved, content, 'utf8');
+      updateSnapshotEntry(resolved);
+      return { ok: true, path: resolved };
+    } catch (err) {
+      return { ok: false, message: '保存失败: ' + err.message };
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +808,7 @@ app.whenReady().then(() => {
   setupIpc();
   setupSaveIpc();
   setupProjectIpc();
+  setupFileIpc();
   createWindow();
 
   app.on('activate', () => {

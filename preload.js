@@ -38,6 +38,12 @@ contextBridge.exposeInMainWorld('editorAPI', {
 
   loadProject: () => ipcRenderer.invoke('project:load'),
 
+  // 读取项目目录内任意文件；返回 { ok, path, content, binary, mime, size, ext }。
+  readFile: (filePath) => ipcRenderer.invoke('file:read', filePath),
+
+  // 将文本写回项目目录内的指定文件；返回 { ok, path }。
+  saveFile: (filePath, content) => ipcRenderer.invoke('file:save', filePath, content),
+
   // 将编辑器全文保存到「保存目录/main.cpp」；返回 { ok, path } 或 { ok:false, cancelled:true }。
   save: (content) => ipcRenderer.invoke('save:save', content),
 

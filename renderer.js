@@ -140,6 +140,16 @@ function pathEquals(a, b) {
   return norm(a) === norm(b);
 }
 
+// 归一化 LSP URI 以便比较：clangd 在 Windows 上会把盘符小写化并还原百分号编码，
+// 而 Monaco 的 Uri.file().toString() 会产生 file:///d%3A/... 形式，需统一后再比对。
+function normalizeUri(u) {
+  if (!u) return u;
+  try {
+    u = decodeURIComponent(u);
+  } catch { /* ignore */ }
+  return IS_WIN ? u.toLowerCase() : u;
+}
+
 const MAX_RECONNECT = 3;
 const INIT_TIMEOUT_MS = 15000;
 
@@ -336,8 +346,10 @@ function updateCursor(position) {
 
 function updateFileLabel() {
   const el = document.getElementById('file-path');
-  if (el) el.textContent = savedPath ? savedPath.replace(/\\/g, '/') : FILE_PATH;
-  window.__cppeditor.savedPath = savedPath;
+  const t = activeTab();
+  const label = t ? (t.path || t.name) : FILE_PATH;
+  if (el) el.textContent = String(label).replace(/\\/g, '/');
+  window.__cppeditor.savedPath = t ? t.path : null;
 }
 
 function showSaveStatus(text, isError) {
@@ -351,52 +363,59 @@ function showSaveStatus(text, isError) {
   }, 4000);
 }
 
-// 保存文件：首次按 Ctrl+S 会弹出目录选择框，之后直接覆盖 main.cpp
+// 保存当前激活标签页：
+//  - 已有路径（从项目树打开）：写回该文件
+//  - 未命名标签页：先选择保存目录，写入 main.cpp，再绑定路径
 async function saveFile() {
   if (!editor || shutdown) return;
+  const tab = activeTab();
+  if (!tab) return;
+  if (tab.kind !== 'text' || !tab.model) {
+    showSaveStatus('该标签页无法以文本方式保存', true);
+    return;
+  }
   try {
-    const result = await window.editorAPI.save(editor.getValue());
-    if (!result) return;
-    if (result.cancelled) return;
-    if (result.ok) {
-      const wasUnset = !projectDir;
-      const dirChanged = !pathEquals(result.projectDir, projectDir);
+    if (!tab.path) {
+      const result = await window.editorAPI.save(tab.model.getValue());
+      if (!result || result.cancelled) return;
+      if (!result.ok) {
+        showSaveStatus(result.message || '保存失败', true);
+        return;
+      }
+      tab.path = result.path;
+      tab.name = basename(tab.path);
+      tab.savedContent = content;
+      tab.dirty = false;
       applyProjectDir(result.projectDir || pathDirOf(result.path), result.path);
+      // 让 model 的 URI 跟随真实路径，clangd 才能对同一 URI 工作
+      const old = tab.model;
+      tab.model = monaco.editor.createModel(
+        old.getValue(),
+        old.getLanguageId(),
+        monaco.Uri.file(tab.path)
+      );
+      old.dispose();
+      activateTab(tab);
+      showSaveStatus('已保存: ' + tab.path);
+      window.__cppeditor._saveSeq = (window.__cppeditor._saveSeq || 0) + 1;
+      loadProjectFile();
+      return;
+    }
+
+    const result = await window.editorAPI.saveFile(tab.path, tab.model.getValue());
+    if (result && result.ok) {
+      tab.savedContent = tab.model.getValue();
+      tab.dirty = false;
+      renderTabs();
       updateFileLabel();
       showSaveStatus('已保存: ' + result.path);
-      window.__cppeditor.saveInfo = { path: result.path, projectDir: result.projectDir };
       window.__cppeditor._saveSeq = (window.__cppeditor._saveSeq || 0) + 1;
-
-      // 首次保存或更换目录：重建 model（URI 跟随项目目录）并重启 LSP，
-      // 让 clangd 以新项目根索引整个目录
-      if (wasUnset || dirChanged) {
-        log('saveFile: rebuild+restart (wasUnset=' + wasUnset + ' dirChanged=' + dirChanged + ' projectDir=' + projectDir + ')');
-        rebuildEditorModel();
-        reconnectAttempts = 0;
-        bootstrap();
-      } else {
-        log('saveFile: no dir change, skip restart');
-      }
     } else {
-      showSaveStatus(result.message || '保存失败', true);
+      showSaveStatus((result && result.message) || '保存失败', true);
     }
   } catch (err) {
     showSaveStatus('保存失败: ' + err.message, true);
   }
-}
-
-// 项目目录变化时重建编辑器 model，让文档 URI 跟随新路径（内容不变）
-function rebuildEditorModel() {
-  const oldModel = editor.getModel();
-  const content = oldModel ? oldModel.getValue() : DEFAULT_CODE;
-  const model = monaco.editor.createModel(
-    content,
-    'cpp',
-    monaco.Uri.parse(DOC_URI)
-  );
-  if (editor.getModel() !== model) editor.setModel(model);
-  if (oldModel) oldModel.dispose();
-  updateFileLabel();
 }
 
 // ---------------------------------------------------------------------------
@@ -558,21 +577,56 @@ async function bootstrap() {
 }
 
 function sendDidOpen() {
+  syncActiveDoc();
+}
+
+function syncActiveDoc() {
   if (!isReady()) return;
+  const doc = currentTextDoc();
+  if (!doc || !doc.uri) {
+    if (lsp.lastDocUri) {
+      try {
+        lsp.connection.sendNotification(proto.DidCloseTextDocumentNotification.type, {
+          textDocument: { uri: lsp.lastDocUri },
+        });
+      } catch { /* ignore */ }
+      lsp.lastDocUri = null;
+    }
+    return;
+  }
+  if (lsp.lastDocUri && lsp.lastDocUri !== doc.uri) {
+    try {
+      lsp.connection.sendNotification(proto.DidCloseTextDocumentNotification.type, {
+        textDocument: { uri: lsp.lastDocUri },
+      });
+    } catch { /* ignore */ }
+    lsp.lastDocUri = null;
+  }
+  // 仅 C/C++ 文档注册给 clangd，其他语言不参与 LSP
+  if (!isCppLang(doc.languageId)) {
+    lsp.lastDocUri = null;
+    return;
+  }
+  lsp.lastDocUri = doc.uri;
   docVersion = 1;
   dirty = false;
   lsp.connection.sendNotification(proto.DidOpenTextDocumentNotification.type, {
     textDocument: {
-      uri: DOC_URI,
-      languageId: 'cpp',
+      uri: doc.uri,
+      languageId: doc.languageId,
       version: docVersion,
-      text: editor.getValue(),
+      text: doc.text,
     },
   });
 }
 
 function syncNow() {
   if (!isReady() || !dirty) return;
+  const doc = currentTextDoc();
+  if (!doc || !doc.uri || !isCppLang(doc.languageId)) {
+    dirty = false;
+    return;
+  }
   if (changeTimer) {
     clearTimeout(changeTimer);
     changeTimer = null;
@@ -580,8 +634,8 @@ function syncNow() {
   docVersion += 1;
   dirty = false;
   lsp.connection.sendNotification(proto.DidChangeTextDocumentNotification.type, {
-    textDocument: { uri: DOC_URI, version: docVersion },
-    contentChanges: [{ text: editor.getValue() }],
+    textDocument: { uri: doc.uri, version: docVersion },
+    contentChanges: [{ text: doc.text }],
   });
 }
 
@@ -592,7 +646,8 @@ function scheduleChange() {
 }
 
 function handleDiagnostics(params) {
-  if (!params || params.uri !== DOC_URI) return;
+  const doc = currentTextDoc();
+  if (!params || !doc || !doc.uri || normalizeUri(params.uri) !== normalizeUri(doc.uri) || !isCppLang(doc.languageId)) return;
   const model = editor && editor.getModel();
   if (!model) return;
 
@@ -706,13 +761,16 @@ function mapCompletionItem(item, model, position) {
 }
 
 async function provideCompletion(model, position, context) {
-  if (!isReady()) return { suggestions: [] };
+  const doc = currentTextDoc();
+  if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) {
+    return { suggestions: [] };
+  }
   syncNow();
   try {
     const triggerKind =
       context.triggerKind === 0 ? 1 : context.triggerKind === 1 ? 2 : 3;
     const params = {
-      textDocument: { uri: DOC_URI },
+      textDocument: { uri: doc.uri },
       position: toLspPosition(position),
       context: {
         triggerKind,
@@ -740,11 +798,12 @@ async function provideCompletion(model, position, context) {
 }
 
 async function provideHover(model, position) {
-  if (!isReady()) return null;
+  const doc = currentTextDoc();
+  if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) return null;
   syncNow();
   try {
     const params = {
-      textDocument: { uri: DOC_URI },
+      textDocument: { uri: doc.uri },
       position: toLspPosition(position),
     };
     const result = await lsp.connection.sendRequest(
@@ -774,7 +833,9 @@ function buildFileTree(paths, basePath = '') {
     path: basePath || 'root'
   };
 
-  paths.forEach(filePath => {
+  paths.forEach(entry => {
+    const filePath = typeof entry === 'string' ? entry : entry.path;
+    const isDirEntry = typeof entry === 'object' && entry.isDirectory === true;
     // 生成相对路径
     let relativePath = filePath;
     if (basePath && filePath.startsWith(basePath)) {
@@ -804,14 +865,22 @@ function buildFileTree(paths, basePath = '') {
         currentPath = segment;
       }
 
+      // 若当前节点此前被误判为文件（后面还有路径要进入它），提升为目录
+      if (currentNode.type === 'file') {
+        currentNode.type = 'directory';
+        currentNode.isFile = false;
+        currentNode.extension = '';
+        currentNode.children = [];
+      }
+
       // 查找是否已存在同名子节点
       let child = currentNode.children.find(
           node => node.name === segment
       );
 
       if (!child) {
-        // 判断是否为文件（简单启发式：最后一段且有扩展名）
-        const isFile = isLast && segment.includes('.');
+        // 是否为文件由主进程的 isDirectory 决定；目录名含点（如 .cache）也按目录处理
+        const isFile = isLast && !isDirEntry;
 
         child = {
           name: segment,
@@ -831,16 +900,10 @@ function buildFileTree(paths, basePath = '') {
     });
   });
 
-  // 对子节点排序：目录在前，文件在后，按名称排序
+  // 对子节点排序：目录在前，文件在后，按名称字典序
   function sortChildren(node) {
     if (node.children && Array.isArray(node.children)) {
-      node.children.sort((a, b) => {
-        // 目录优先
-        if (a.type === 'directory' && b.type !== 'directory') return -1;
-        if (a.type !== 'directory' && b.type === 'directory') return 1;
-        // 按名称排序
-        return a.name.localeCompare(b.name);
-      });
+      node.children.sort(compareTreeNodes);
 
       // 递归排序子节点
       node.children.forEach(child => {
@@ -852,12 +915,8 @@ function buildFileTree(paths, basePath = '') {
     return node;
   }
 
-  // 对根节点的子节点排序
-  root.children.forEach(child => {
-    if (child.type === 'directory') {
-      sortChildren(child);
-    }
-  });
+  // 对根节点的子节点也排序（目录在前、文件在后，各自按名称字典序）
+  sortChildren(root);
 
   // 返回根节点的子节点（即顶层目录/文件）
   return root.children;
@@ -918,7 +977,10 @@ function rendererFileTree(paths, faNode) {
       node.appendChild(nodeExpand);
       node.classList.add('folder');
     }
-    else node.classList.add('file');
+    else {
+      node.classList.add('file');
+      node.addEventListener('click', () => openFileTab(path.path));
+    }
     const nodeImg = document.createElement('img');
     nodeImg.src = getFileIcon(getFileType(path));
     const nodeText = document.createElement('span');
@@ -943,6 +1005,13 @@ let projectDom = null;
 async function loadProjectFile(){
   const projectInf = await window.editorAPI.loadProject();
   if (projectInf && projectInf.projectDir) projectDir = projectInf.projectDir;
+  const frame = document.getElementById('fileframe');
+  if (frame) frame.innerHTML = '';
+  if (!projectInf || !projectInf.files || projectInf.files.length === 0) {
+    projectFileTree = [];
+    projectDom = null;
+    return;
+  }
   const projectTree = buildFileTree(projectInf.files, projectInf.projectDir);
   projectFileTree = projectTree.filter(path => path.name !== '.cache' && path.name !== 'compile_commands.json');
   projectDom = document.createElement('div');
@@ -997,10 +1066,21 @@ function shouldIgnoreTreePath(p) {
 function compareTreeNodes(a, b) {
   if (a.type === 'directory' && b.type !== 'directory') return -1;
   if (a.type !== 'directory' && b.type === 'directory') return 1;
-  return a.name.localeCompare(b.name);
+  return compareNames(a.name, b.name);
 }
 
-// 将新 DOM 节点按「目录优先 + 名称排序」插入容器
+// 名称字典序比较（不区分大小写，大小写相同时按原始字符序稳定排序）
+function compareNames(x, y) {
+  const lx = String(x).toLowerCase();
+  const ly = String(y).toLowerCase();
+  if (lx < ly) return -1;
+  if (lx > ly) return 1;
+  if (x < y) return -1;
+  if (x > y) return 1;
+  return 0;
+}
+
+// 将新 DOM 节点按「目录优先 + 名称字典序」插入容器
 function insertChildDomSorted(container, el, name, isDir) {
   for (const sibling of container.children) {
     if (!sibling.classList || (!sibling.classList.contains('folder') && !sibling.classList.contains('file'))) continue;
@@ -1010,7 +1090,7 @@ function insertChildDomSorted(container, el, name, isDir) {
     let before = false;
     if (isDir && !sibIsDir) before = true;
     else if (!isDir && sibIsDir) before = false;
-    else before = name.localeCompare(sibName) < 0;
+    else before = compareNames(name, sibName) < 0;
     if (before) {
       container.insertBefore(el, sibling);
       return;
@@ -1032,7 +1112,7 @@ function findTreeNode(nodes, fullPath) {
 }
 
 // 将新增文件/目录的绝对路径插入数据树与 DOM（自动补齐中间目录）
-function insertFilePath(basePath, nodes, fullPath, rootContainer) {
+function insertFilePath(basePath, nodes, fullPath, rootContainer, isDirectory) {
   let rel = fullPath;
   if (basePath && normalizeTreePath(fullPath).startsWith(normalizeTreePath(basePath))) {
     rel = fullPath.substring(basePath.length);
@@ -1051,7 +1131,8 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer) {
 
     let child = levelNodes.find((n) => n.name === segment);
     if (!child) {
-      const isFile = isLast && segment.includes('.');
+      // isDirectory 只针对整条路径的末段（文件/目录由 watcher 判定）
+      const isFile = isLast && !isDirectory;
       child = {
         name: segment,
         type: isFile ? 'file' : 'directory',
@@ -1071,6 +1152,7 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer) {
       const el = document.createElement('div');
       if (isFile) {
         el.classList.add('file');
+        el.addEventListener('click', () => openFileTab(child.path));
       } else {
         el.classList.add('folder');
         const expand = document.createElement('div');
@@ -1093,6 +1175,28 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer) {
       }
       child.node = el;
       insertChildDomSorted(levelContainer, el, child.name, !isFile);
+    }
+
+    // 若该节点此前被误判为文件（新路径要进入它），提升为目录
+    if (child.type === 'file' && !isLast) {
+      child.type = 'directory';
+      child.isFile = false;
+      child.extension = '';
+      child.children = [];
+      if (child.node) {
+        const el = child.node;
+        el.classList.remove('file');
+        el.classList.add('folder');
+        const expand = document.createElement('div');
+        expand.innerText = '>';
+        expand.classList.add('expand');
+        expand.addEventListener('click', () => expandFolder(el));
+        el.insertBefore(expand, el.firstChild);
+        const childrenEl = document.createElement('div');
+        childrenEl.classList.add('children');
+        childrenEl.style.display = 'none';
+        el.appendChild(childrenEl);
+      }
     }
 
     if (child.type === 'directory') {
@@ -1119,12 +1223,8 @@ function removeFilePath(nodes, fullPath, rootContainer) {
       if (n.type === 'directory') {
         const childContainer = n.node ? n.node.querySelector(':scope > div.children') : null;
         if (removeIn(n.children, childContainer)) {
-          // 子节点删空后父目录也一并移除
-          if (n.children.length === 0 && n.node && n.node.parentNode) {
-            const at = list.indexOf(n);
-            if (at !== -1) list.splice(at, 1);
-            n.node.parentNode.removeChild(n.node);
-          }
+          // 空文件夹也保留在树中（与创建时「空文件夹可见」一致），
+          // 目录本身的增删由 watcher 以 added/removed 事件驱动
           return true;
         }
       }
@@ -1148,47 +1248,364 @@ function updateFileTree(info) {
   const rootContainer = projectDom.querySelector(':scope > div.children');
   if (!rootContainer) return;
   for (const f of info.added || []) {
-    if (shouldIgnoreTreePath(f)) continue;
-    insertFilePath(projectDir, projectFileTree, f, rootContainer);
+    const p = typeof f === 'object' ? f.path : f;
+    if (shouldIgnoreTreePath(p)) continue;
+    insertFilePath(projectDir, projectFileTree, p, rootContainer, typeof f === 'object' ? !!f.isDirectory : false);
   }
   for (const f of info.removed || []) {
-    if (shouldIgnoreTreePath(f)) continue;
-    removeFilePath(projectFileTree, f, rootContainer);
+    const p = typeof f === 'object' ? f.path : f;
+    if (shouldIgnoreTreePath(p)) continue;
+    removeFilePath(projectFileTree, p, rootContainer);
   }
 }
 
 // ---------------------------------------------------------------------------
-// 6. 编辑器初始化
+// 6. 编辑器初始化与多标签页
+//    每个标签页持有独立的 monaco model（自带语法高亮与撤销/重做栈），
+//    文本用编辑器打开，图片用图片查看器，二进制/未知类型显示信息面板。
 // ---------------------------------------------------------------------------
 const DEFAULT_CODE = ``;
 
+const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.webp', '.svg'];
+
+const LANG_BY_EXT = {
+  '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp',
+  '.hpp': 'cpp', '.hh': 'cpp', '.hxx': 'cpp', '.ino': 'cpp',
+  '.java': 'java', '.py': 'python', '.js': 'javascript', '.mjs': 'javascript',
+  '.cjs': 'javascript', '.jsx': 'javascript', '.ts': 'typescript',
+  '.tsx': 'typescript', '.json': 'json', '.jsonc': 'json',
+  '.md': 'markdown', '.txt': 'plaintext', '.log': 'plaintext',
+  '.html': 'html', '.htm': 'html', '.css': 'css', '.scss': 'scss',
+  '.less': 'less', '.xml': 'xml', '.svg': 'xml', '.yml': 'yaml',
+  '.yaml': 'yaml', '.ini': 'ini', '.toml': 'ini', '.sh': 'shell',
+  '.bat': 'batch', '.ps1': 'powershell', '.sql': 'sql', '.go': 'go',
+  '.rs': 'rust', '.cs': 'csharp', '.php': 'php', '.rb': 'ruby',
+  '.swift': 'swift', '.kt': 'kotlin', '.lua': 'lua', '.dart': 'dart',
+};
+
 let editor = null;
+let tabs = [];
+let activeTabId = null;
+let tabSeq = 0;
+let pendingOpenPath = null;
+let pendingOpenOpts = null;
+
+function basename(p) {
+  p = (p || '').replace(/\\/g, '/');
+  const i = p.lastIndexOf('/');
+  return i === -1 ? p : p.slice(i + 1);
+}
+
+function pathJoin(dir, name) {
+  return (dir || '').replace(/\\/g, '/').replace(/\/+$/, '') + '/' + name;
+}
+
+function languageForPath(p) {
+  const ext = '.' + getFileExtension(p).toLowerCase();
+  return LANG_BY_EXT[ext] || 'plaintext';
+}
+
+function activeTab() {
+  return tabs.find((t) => t.id === activeTabId) || null;
+}
+
+function findTabByPath(p) {
+  const norm = (p || '').replace(/\\/g, '/').toLowerCase();
+  return (
+    tabs.find(
+      (t) => t.path && t.path.replace(/\\/g, '/').toLowerCase() === norm
+    ) || null
+  );
+}
+
+function isCppLang(lang) {
+  return lang === 'cpp' || lang === 'c' || lang === 'objective-c';
+}
+
+// 当前激活的文本文档信息（供 LSP 使用）；非文本/无 model 时返回 null
+function currentTextDoc() {
+  const t = activeTab();
+  if (!t || t.kind !== 'text' || !t.model) return null;
+  const uri = t.model.uri ? t.model.uri.toString() : null;
+  return { uri, languageId: t.model.getLanguageId(), text: t.model.getValue() };
+}
+
+// 打开文件（项目树点击 / 启动恢复）。同一文件只保留一个标签页。
+async function openFileTab(path, opts) {
+  opts = opts || {};
+  if (!editor) {
+    pendingOpenPath = path;
+    pendingOpenOpts = opts;
+    return;
+  }
+  const existing = findTabByPath(path);
+  if (existing) {
+    activateTab(existing);
+    return;
+  }
+
+  const tab = {
+    id: ++tabSeq,
+    path,
+    name: basename(path),
+    kind: 'text',
+    dirty: false,
+    restoring: !!opts.restore,
+    model: null,
+  };
+  tabs.push(tab);
+
+  let file = null;
+  try {
+    file =
+      opts.content !== undefined
+        ? { ok: true, content: opts.content }
+        : await window.editorAPI.readFile(path);
+  } catch (e) {
+    file = { ok: false, message: e.message };
+  }
+
+  if (!file || !file.ok) {
+    tab.kind = 'error';
+    tab.errorMsg = (file && file.message) || '读取文件失败';
+    renderTabs();
+    activateTab(tab);
+    return;
+  }
+
+  const ext = '.' + getFileExtension(path).toLowerCase();
+  const isImage = IMAGE_EXTS.includes(ext) || (file.mime && file.mime.startsWith('image/'));
+
+  if (isImage || file.binary) {
+    tab.kind = 'image';
+    tab.mime = file.mime || 'image/png';
+    tab.size = file.size || 0;
+    tab.b64 = file.content; // 主进程对图片/二进制返回 base64
+    if (isImage && !file.binary && typeof file.content === 'string') {
+      // svg 等以文本形式返回的图片：转成 base64
+      try {
+        tab.b64 = btoa(unescape(encodeURIComponent(file.content)));
+      } catch {
+        tab.b64 = btoa(file.content);
+      }
+    }
+    if (file.binary && !isImage) tab.kind = 'binary';
+  } else {
+    tab.kind = 'text';
+    tab.model = monaco.editor.createModel(
+      file.content,
+      languageForPath(path),
+      monaco.Uri.file(path)
+    );
+    tab.savedContent = file.content;
+  }
+
+  renderTabs();
+  activateTab(tab);
+}
+
+function activateTab(tab) {
+  const prev = activeTab();
+  activeTabId = tab.id;
+  const host = document.getElementById('fileview');
+  const econt = document.getElementById('editor');
+
+  if (tab.kind === 'text' && tab.model) {
+    if (host) {
+      host.style.display = 'none';
+      host.innerHTML = '';
+    }
+    if (econt) econt.style.display = '';
+    editor.setModel(tab.model);
+    if (editor.layout) editor.layout();
+    if (!tab.restoring) editor.focus();
+  } else {
+    if (econt) econt.style.display = 'none';
+    editor.setModel(null);
+    if (host) {
+      host.style.display = 'flex';
+      host.innerHTML = '';
+      if (tab.kind === 'image') {
+        const img = document.createElement('img');
+        img.src = 'data:' + (tab.mime || 'image/png') + ';base64,' + tab.b64;
+        host.appendChild(img);
+      } else {
+        const info = document.createElement('div');
+        info.className = 'bininfo';
+        const t1 = document.createElement('div');
+        t1.className = 'bintitle';
+        t1.textContent = tab.name;
+        const t2 = document.createElement('div');
+        t2.className = 'binmsg';
+        t2.textContent =
+          tab.kind === 'error'
+            ? tab.errorMsg
+            : '二进制文件（' + (tab.size || 0) + ' 字节），无法以文本方式编辑';
+        info.appendChild(t1);
+        info.appendChild(t2);
+        host.appendChild(info);
+      }
+    }
+  }
+
+  renderTabs();
+  updateFileLabel();
+  syncActiveDoc(prev);
+}
+
+// 以磁盘当前内容重建标签页（外部修改时保持与磁盘同步）。
+// 文件已不存在时直接关闭标签页（删除文件 = 关闭标签）。
+async function reloadTabFromDisk(tab) {
+  if (!tab || !tab.path) return;
+  let file = null;
+  try {
+    file = await window.editorAPI.readFile(tab.path);
+  } catch (e) {
+    file = { ok: false, message: e.message };
+  }
+  if (!file || !file.ok) {
+    closeTab(tab.id);
+    return;
+  }
+
+  const ext = '.' + getFileExtension(tab.path).toLowerCase();
+  const isImage = IMAGE_EXTS.includes(ext) || (file.mime && file.mime.startsWith('image/'));
+  const kind = isImage ? 'image' : file.binary ? 'binary' : 'text';
+
+  // 文件类型变化（如文本→二进制）会被主进程解析为「删除旧文件 + 新增新文件」，
+  // 走 removed 分支直接关闭标签，这里无需处理类型切换。
+  if (kind === 'text') {
+    if (!tab.model) {
+      tab.model = monaco.editor.createModel(
+        file.content,
+        languageForPath(tab.path),
+        monaco.Uri.file(tab.path)
+      );
+    } else if (tab.model.getValue() !== file.content) {
+      tab.model.setValue(file.content);
+    }
+    tab.savedContent = file.content;
+    tab.dirty = false;
+  } else {
+    tab.mime = file.mime || 'image/png';
+    tab.size = file.size || 0;
+    tab.b64 = file.content;
+  }
+
+  renderTabs();
+  if (activeTabId === tab.id) activateTab(tab);
+}
+
+// 外部文件变化时，同步已打开标签页：
+//  - modified: 非脏文本标签重新读取；图片/二进制重新加载
+//  - removed:  直接关闭对应标签页（文件已删除，无需保留）
+//  - added:    树已自动插入节点；标签页由用户按需重新打开
+async function refreshTabsForChanges(info) {
+  if (!info) return;
+  for (const f of info.modified || []) {
+    const p = typeof f === 'object' ? f.path : f;
+    const t = findTabByPath(p);
+    if (!t) continue;
+    if (t.kind === 'text' && t.dirty) continue; // 保留未保存的编辑
+    await reloadTabFromDisk(t);
+  }
+  for (const f of info.removed || []) {
+    const p = typeof f === 'object' ? f.path : f;
+    const t = findTabByPath(p);
+    if (t) closeTab(t.id);
+  }
+}
+
+function renderTabs() {
+  const bar = document.getElementById('tabbar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  for (const t of tabs) {
+    const el = document.createElement('div');
+    el.className = 'tab' + (t.id === activeTabId ? ' active' : '');
+    const img = document.createElement('img');
+    img.src = getFileIcon(getFileType({ name: t.name, type: 'file' }));
+    const span = document.createElement('span');
+    span.textContent = t.name;
+    span.title = t.path || t.name;
+    if (t.dirty) span.textContent += ' ●';
+    const btn = document.createElement('button');
+    btn.textContent = '×';
+    btn.title = '关闭';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      closeTab(t.id);
+    });
+    el.appendChild(img);
+    el.appendChild(span);
+    el.appendChild(btn);
+    el.addEventListener('click', () => activateTabById(t.id));
+    el.addEventListener('auxclick', (ev) => {
+      if (ev.button === 1) {
+        ev.preventDefault();
+        closeTab(t.id);
+      }
+    });
+    bar.appendChild(el);
+  }
+  bar.scrollLeft = bar.scrollWidth;
+}
+
+function activateTabById(id) {
+  const t = tabs.find((x) => x.id === id);
+  if (t) activateTab(t);
+}
+
+function closeTab(id) {
+  const idx = tabs.findIndex((t) => t.id === id);
+  if (idx === -1) return;
+  const tab = tabs[idx];
+  const wasActive = tab.id === activeTabId;
+  tabs.splice(idx, 1);
+  if (tab.model) {
+    try {
+      tab.model.dispose();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (wasActive) {
+    const next = tabs[Math.min(idx, tabs.length - 1)] || null;
+    if (next) {
+      activateTab(next);
+    } else {
+      activeTabId = null;
+      const econt = document.getElementById('editor');
+      if (econt) econt.style.display = '';
+      editor.setModel(null);
+      if (editor.layout) editor.layout();
+      const host = document.getElementById('fileview');
+      if (host) {
+        host.style.display = 'none';
+        host.innerHTML = '';
+      }
+      if (lsp && lsp.initialized && lsp.lastDocUri) {
+        try {
+          lsp.connection.sendNotification(proto.DidCloseTextDocumentNotification.type, {
+            textDocument: { uri: lsp.lastDocUri },
+          });
+        } catch {
+          /* ignore */
+        }
+        lsp.lastDocUri = null;
+      }
+      renderTabs();
+      updateFileLabel();
+    }
+  } else {
+    renderTabs();
+  }
+}
 
 async function startEditor() {
   window.__cppeditor.stage = 'monaco-loaded';
 
-  // 启动时尝试恢复上次保存的项目（目录 + 文件内容）
-  let initialCode = DEFAULT_CODE;
-  try {
-    const saved = await window.editorAPI.getSaved();
-    if (saved && saved.ok && typeof saved.content === 'string') {
-      initialCode = saved.content;
-      applyProjectDir(saved.projectDir || pathDirOf(saved.path), saved.path);
-    } else if (saved && saved.projectDir) {
-      applyProjectDir(saved.projectDir);
-    }
-  } catch (e) {
-    /* 恢复失败时使用默认示例代码 */
-  }
-
-  const model = monaco.editor.createModel(
-    initialCode,
-    'cpp',
-    monaco.Uri.parse(DOC_URI)
-  );
-
   editor = monaco.editor.create(document.getElementById('editor'), {
-    model,
     theme: 'vs-dark',
     fontSize: 14,
     fontFamily: 'Cascadia Code, Consolas, "Courier New", monospace',
@@ -1213,7 +1630,17 @@ async function startEditor() {
     fixedOverflowWidgets: true,
   });
 
-  editor.onDidChangeModelContent(() => scheduleChange());
+  editor.onDidChangeModelContent(() => {
+    const t = activeTab();
+    if (t && t.kind === 'text' && t.model) {
+      const isDirty = t.model.getValue() !== (t.savedContent !== undefined ? t.savedContent : '');
+      if (isDirty !== t.dirty) {
+        t.dirty = isDirty;
+        renderTabs();
+      }
+    }
+    scheduleChange();
+  });
   editor.onDidChangeCursorPosition((e) => updateCursor(e.position));
   updateCursor({ lineNumber: 1, column: 1 });
 
@@ -1243,13 +1670,51 @@ async function startEditor() {
     },
   });
 
-  updateFileLabel();
   setDiagCounts(0, 0);
   setLspState('connecting', '正在连接 clangd...');
-  editor.focus();
-  window.__cppeditor.stage = 'editor-ready';
-  window.__cppeditor.lines = model.getLineCount();
 
+  // 启动时尝试恢复上次保存的项目（目录 + main.cpp 内容）
+  let restored = null;
+  try {
+    restored = await window.editorAPI.getSaved();
+  } catch (e) {
+    /* 恢复失败时使用默认空内容 */
+  }
+  if (restored && restored.projectDir) {
+    applyProjectDir(restored.projectDir, restored.path);
+  }
+
+  // 编辑器就绪前用户已点击文件树：补开该文件
+  if (pendingOpenPath) {
+    const p = pendingOpenPath;
+    const o = pendingOpenOpts;
+    pendingOpenPath = null;
+    pendingOpenOpts = null;
+    await openFileTab(p, o);
+  } else if (restored && restored.ok && restored.path) {
+    await openFileTab(restored.path, { content: restored.content, restore: true });
+  } else if (projectDir) {
+    await openFileTab(pathJoin(projectDir, 'main.cpp'));
+  } else {
+    // 尚无项目：打开一个未命名标签页，首次保存时选择目录
+    const tab = {
+      id: ++tabSeq,
+      name: '未命名',
+      path: null,
+      kind: 'text',
+      dirty: false,
+      restoring: true,
+      model: null,
+      savedContent: DEFAULT_CODE,
+    };
+    tab.model = monaco.editor.createModel(DEFAULT_CODE, 'cpp');
+    tabs.push(tab);
+    renderTabs();
+    activateTab(tab);
+  }
+
+  window.__cppeditor.stage = 'editor-ready';
+  editor.focus();
   bootstrap();
 }
 
@@ -1272,13 +1737,16 @@ function init() {
   // 项目目录文件增删：通知 clangd 重新索引（compile_commands.json 已在主进程重建）
   window.editorAPI.onProjectChanged((info) => {
     updateFileTree(info);
+    refreshTabsForChanges(info);
     if (!lsp || !lsp.initialized || !info) return;
     const changes = [];
     for (const f of info.added || []) {
-      changes.push({ uri: 'file:///' + f.replace(/\\/g, '/'), type: 1 });
+      const p = typeof f === 'object' ? f.path : f;
+      changes.push({ uri: 'file:///' + p.replace(/\\/g, '/'), type: 1 });
     }
     for (const f of info.removed || []) {
-      changes.push({ uri: 'file:///' + f.replace(/\\/g, '/'), type: 3 });
+      const p = typeof f === 'object' ? f.path : f;
+      changes.push({ uri: 'file:///' + p.replace(/\\/g, '/'), type: 3 });
     }
     if (changes.length) {
       lsp.connection.sendNotification('workspace/didChangeWatchedFiles', {
@@ -1295,6 +1763,12 @@ function init() {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === 's') {
       e.preventDefault();
       saveFile();
+    }
+    // Ctrl+W 关闭当前标签页
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
+      e.preventDefault();
+      const t = activeTab();
+      if (t) closeTab(t.id);
     }
   });
 

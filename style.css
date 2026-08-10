@@ -23,7 +23,8 @@ body {
     display: flex;
     flex-direction: column;
     height: 100%;
-    flex-grow: 1;
+    flex: 1;
+    overflow: hidden;
 }
 
 #tabbar{
@@ -31,6 +32,16 @@ body {
     display: flex;
     border-bottom: 1px solid #3c3c3c;
     padding: 0 7px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+#tabbar::-webkit-scrollbar{
+    height: 4px;
+}
+
+#tabbar::-webkit-scrollbar-thumb{
+    background: #3c3c3c;
 }
 
 #tabbar .tab{
@@ -40,6 +51,9 @@ body {
     display: flex;
     padding: 2px 4px;
     align-items: center;
+    flex-shrink: 0;
+    cursor: pointer;
+    max-width: 220px;
 }
 
 #tabbar .tab:hover{
@@ -47,7 +61,7 @@ body {
 }
 
 #tabbar .tab.active{
-    background-color: #38393a;
+    background-color: #4c4d4e;
 }
 
 #tabbar .tab img{
@@ -58,6 +72,10 @@ body {
 #tabbar .tab span{
     font-size: 15px;
     display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: 2px;
 }
 
 #tabbar .tab button{
@@ -70,10 +88,52 @@ body {
     height: 15px;
     font-size: 15px;
     margin-left: 2px;
+    flex-shrink: 0;
+    cursor: pointer;
+    border-radius: 3px;
+    line-height: 15px;
+}
+
+#tabbar .tab button:hover{
+    background-color: #6a6b6c;
+    color: #ffffff;
 }
 
 #editor {
     flex-grow: 1;
+}
+
+/* 非文本视图（图片 / 二进制 / 错误提示） */
+#fileview {
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    background: #1e1e1e;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+#fileview img{
+    max-width: 100%;
+    max-height: 100%;
+    -webkit-user-drag: none;
+}
+
+#fileview .bininfo{
+    text-align: center;
+    color: #9d9d9d;
+}
+
+#fileview .bintitle{
+    font-size: 16px;
+    margin-bottom: 8px;
+    color: #cccccc;
+}
+
+#fileview .binmsg{
+    font-size: 13px;
 }
 
 /* ------------------------------------------------------------------
@@ -192,6 +252,14 @@ body {
     overflow: hidden auto;
 }
 
+#fileframe::-webkit-scrollbar{
+    width: 4px;
+}
+
+#fileframe::-webkit-scrollbar-thumb{
+    background: #3c3c3c;
+}
+
 #fileframe .folder, #fileframe .file{
     display: flex;
     align-items: center;
@@ -201,6 +269,14 @@ body {
 #fileframe .folder{
     padding-left: 20px;
     position: relative;
+}
+
+#fileframe .file{
+    cursor: pointer;
+}
+
+#fileframe .file:hover{
+    background-color: #2a2d2e;
 }
 
 #fileframe .folder > .expand{
