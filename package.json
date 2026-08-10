@@ -32,7 +32,8 @@
     "files": [
       "**/*",
       "!resources/clangd/**",
-      "!resources/mingw/**"
+      "!resources/mingw/**",
+      "!CppProject/**"
     ],
     "extraResources": [
       {
@@ -50,7 +51,7 @@
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": false,
+      "perMachine": true,
       "allowToChangeInstallationDirectory": true,
       "installerLanguages": [
         "zh_CN"

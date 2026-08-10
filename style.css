@@ -8,6 +8,11 @@ body {
     font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
     background: #1e1e1e;
     color: #cccccc;
+    user-select: none;
+}
+
+img{
+    -webkit-user-drag: none;
 }
 
 body {
