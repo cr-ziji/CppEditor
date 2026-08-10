@@ -1718,6 +1718,66 @@ async function startEditor() {
   bootstrap();
 }
 
+function initHeader(){
+  document.getElementById('minimize-btn').addEventListener('click', () => {
+    window.editorAPI.minimizeWindow();
+  })
+  document.getElementById('maximize-btn').addEventListener('click', () => {
+    window.editorAPI.maximizeWindow();
+  })
+  document.getElementById('unmaximize-btn').addEventListener('click', () => {
+    window.editorAPI.unmaximizeWindow();
+  })
+  document.getElementById('close-btn').addEventListener('click', () => {
+    window.editorAPI.closeWindow();
+  })
+  window.editorAPI.onMaximizedWindow(() => {
+    document.getElementById('maximize-btn').style.display = 'none';
+    document.getElementById('unmaximize-btn').style.display = 'flex';
+  })
+  window.editorAPI.onUnmaximizedWindow(() => {
+    document.getElementById('maximize-btn').style.display = 'flex';
+    document.getElementById('unmaximize-btn').style.display = 'none';
+  })
+
+  document.getElementById('run-btn').addEventListener('click', async () => {
+    const t = activeTab();
+    if (!t || t.kind !== 'text' || !t.model) {
+      showSaveStatus('没有可运行的源文件', true);
+      return;
+    }
+    // 未绑定磁盘路径的文档先保存（取消保存则中止）
+    if (!t.path) {
+      await saveFile();
+      if (!t.path) return;
+    }
+    const ext = '.' + getFileExtension(t.path).toLowerCase();
+    if (ext !== '.c' && ext !== '.cpp') {
+      showSaveStatus('仅支持运行 .c / .cpp 文件', true);
+      return;
+    }
+    // 有未保存修改时先落盘，保证编译的是最新内容
+    if (t.dirty) await saveFile();
+
+    showSaveStatus('正在编译 ' + t.name + ' ...');
+    let result;
+    try {
+      result = await window.editorAPI.runFile(t.path);
+    } catch (err) {
+      showSaveStatus('运行失败: ' + err.message, true);
+      return;
+    }
+    if (result && result.ok) {
+      showSaveStatus('已启动: ' + basename(result.exePath || t.path));
+    } else {
+      const msg = (result && result.message) || '编译失败';
+      console.error(msg);
+      const firstLine = msg.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '编译失败';
+      showSaveStatus(firstLine.slice(0, 120), true);
+    }
+  })
+}
+
 // ---------------------------------------------------------------------------
 // 7. 启动
 // ---------------------------------------------------------------------------
@@ -1731,6 +1791,8 @@ function init() {
   window.editorAPI.onLog((line) => {
     if (line) log(line);
   });
+
+  initHeader();
 
   loadProjectFile();
 

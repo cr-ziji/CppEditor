@@ -1,3 +1,8 @@
+*{
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
 html,
 body {
     margin: 0;
@@ -8,15 +13,83 @@ body {
     font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
     background: #1e1e1e;
     color: #cccccc;
-    user-select: none;
-}
-
-img{
-    -webkit-user-drag: none;
 }
 
 body {
     display: flex;
+    flex-direction: column;
+}
+
+header {
+    -webkit-app-region: drag;
+    display: flex;
+    padding: 10px;
+    padding-right: 5px;
+    border-bottom: 1px solid #3c3c3c;
+}
+
+header #app-icon {
+    width: 30px;
+    margin-right: 5px;
+}
+
+header #app-title {
+    margin: 0;
+    font-size: 20px;
+    margin-right: auto;
+}
+
+header #run-btn{
+    -webkit-app-region: no-drag;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    background: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    margin-right: 30px;
+}
+
+header #run-btn:hover{
+    background: #3A3B3F;
+}
+
+header #run-btn img{
+    width: 20px;
+}
+
+header #minimize-btn, header #maximize-btn, header #unmaximize-btn, header #close-btn {
+    -webkit-app-region: no-drag;
+    width: 45px;
+    height: 40px;
+    padding: 0;
+    margin: -5px 0;
+    border: none;
+    background: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+header #minimize-btn:hover, header #maximize-btn:hover, header #unmaximize-btn:hover {
+    background-color: #3A3B3F;
+}
+
+header #close-btn:hover {
+    background-color: #C42B1C;
+}
+
+header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, header #close-btn img {
+    width: 15px;
+}
+
+#content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
 }
 
 #textframe{
@@ -232,8 +305,8 @@ body {
 
 #fileframe{
     width: 300px;
-    height: 100%;
     flex-shrink: 0;
+    padding: 5px;
 }
 
 #resizer{

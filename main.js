@@ -282,6 +282,7 @@ function snapshotProjectFiles(dir) {
         out.set(fp, { mtimeMs: 0, size: 0, isDirectory: true });
         walk(path.join(d, name), depth + 1);
       } else if (ent.isFile()) {
+        if (path.extname(ent.name).toLowerCase() === '.exe') continue; // 编译产物不跟踪
         const fp = path.join(d, name).replace(/\\/g, '/');
         try {
           const st = fs.statSync(path.join(d, name));
@@ -563,7 +564,7 @@ function stopClangd() {
 // ---------------------------------------------------------------------------
 // IPC 接口
 // ---------------------------------------------------------------------------
-function setupIpc() {
+function setupLspIpc() {
   ipcMain.handle('lsp:start', () => {
     const result = startClangd();
     return {
@@ -699,6 +700,8 @@ async function readProjectDir(currentPath) {
       const nestedFiles = await readProjectDir(fullPath);
       results.push(...nestedFiles);
     } else {
+      // 编译产物（.exe）不显示在文件树中
+      if (path.extname(entry.name).toLowerCase() === '.exe') continue;
       // 是文件，直接记录其路径
       results.push({ path: fullPath, isDirectory: false });
     }
@@ -772,17 +775,114 @@ function setupFileIpc() {
 }
 
 // ---------------------------------------------------------------------------
+// 运行当前文件：用 MinGW 的 g++/gcc 编译 .cpp/.c，成功后启动编译出的 exe
+// ---------------------------------------------------------------------------
+function getGxxPath() {
+  const bundled = path.join(getMingwRoot(), 'bin', 'g++.exe');
+  return fs.existsSync(bundled) ? bundled : 'g++';
+}
+
+function getGccPath() {
+  const bundled = path.join(getMingwRoot(), 'bin', 'gcc.exe');
+  return fs.existsSync(bundled) ? bundled : 'gcc';
+}
+
+// 让子进程能找到 MinGW 的 DLL（libstdc++-6.dll 等）
+function mingwEnv() {
+  const binDir = path.join(getMingwRoot(), 'bin');
+  return {
+    ...process.env,
+    PATH: binDir + path.delimiter + (process.env.PATH || ''),
+  };
+}
+
+function runProcess(cmd, args, cwd, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, env, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d.toString('utf8');
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d.toString('utf8');
+    });
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+function setupRunIpc() {
+  ipcMain.handle('run:compile-and-run', async (_event, filePath) => {
+    if (typeof filePath !== 'string' || !filePath) {
+      return { ok: false, message: '无效的文件路径' };
+    }
+    if (!fs.existsSync(filePath)) {
+      return { ok: false, message: '文件不存在: ' + filePath };
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const isC = ext === '.c';
+    if (!isC && ext !== '.cpp') {
+      return { ok: false, message: '仅支持运行 .c / .cpp 文件' };
+    }
+
+    const compiler = isC ? getGccPath() : getGxxPath();
+    const exePath = filePath.slice(0, filePath.length - ext.length) + '.exe';
+    const dir = path.dirname(filePath);
+    const stdFlag = isC ? '-std=c11' : '-std=c++17';
+    // -static 静态链接 libstdc++/libgcc/libwinpthread，生成的 exe 不依赖
+    // mingw 运行时 DLL（libstdc++-6.dll 等），可独立运行
+    const args = [filePath, '-o', exePath, stdFlag, '-static'];
+
+    let result;
+    try {
+      result = await runProcess(compiler, args, dir, mingwEnv());
+    } catch (err) {
+      return { ok: false, message: '无法启动编译器: ' + err.message };
+    }
+    if (result.code !== 0) {
+      const detail = (result.stderr || result.stdout || '').trim();
+      return {
+        ok: false,
+        message: '编译失败' + (detail ? ':\n' + detail : ''),
+      };
+    }
+
+    // 打开编译出的 exe：经 cmd start 在新窗口中启动目标程序。
+    // 直接 spawn 控制台程序通常不会弹出可见窗口；cmd /c start 会为目标
+    // 分配一个新的控制台窗口。外层再套 cmd /k，程序退出后窗口保留，
+    // 便于查看输出（避免 hello world 一闪而过）。windowsHide 只隐藏
+    // 最外层 cmd 本身，start 创建的目标窗口不受影响。
+    try {
+      const cmdPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+      const child = spawn(cmdPath, ['/c', 'start', '', 'cmd', '/k', exePath], {
+        cwd: dir,
+        env: mingwEnv(),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+    } catch (err) {
+      return { ok: false, message: '启动程序失败: ' + err.message };
+    }
+    return { ok: true, exePath, message: '已启动: ' + exePath };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 窗口与应用生命周期
 // ---------------------------------------------------------------------------
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
-    height: 800,
+    height: 860,
     minWidth: 640,
     minHeight: 400,
     backgroundColor: '#1e1e1e',
     autoHideMenuBar: true,
     title: 'CppEditor',
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -800,15 +900,47 @@ function createWindow() {
     mainWindow = null;
   });
 
+  mainWindow.on('maximize', () => {
+    emitToRenderer('window:maximized');
+  })
+  mainWindow.on('unmaximize', () => {
+    emitToRenderer('window:unmaximized');
+  })
+
   mainWindow.webContents.openDevTools({ mode: 'detach' });
+}
+
+function setupWindowIpc() {
+  ipcMain.on('window:minimize', () => {
+    if (mainWindow){
+      mainWindow.minimize();
+    }
+  })
+  ipcMain.on('window:maximize', () => {
+    if (mainWindow){
+      mainWindow.maximize();
+    }
+  })
+  ipcMain.on('window:unmaximize', () => {
+    if (mainWindow){
+      mainWindow.unmaximize();
+    }
+  })
+  ipcMain.on('window:close', () => {
+    if (mainWindow){
+      mainWindow.close();
+    }
+  })
 }
 
 app.whenReady().then(() => {
   registerEditorProtocol();
-  setupIpc();
+  setupWindowIpc();
+  setupLspIpc();
   setupSaveIpc();
   setupProjectIpc();
   setupFileIpc();
+  setupRunIpc();
   createWindow();
 
   app.on('activate', () => {
