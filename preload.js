@@ -38,6 +38,9 @@ contextBridge.exposeInMainWorld('editorAPI', {
 
   loadProject: () => ipcRenderer.invoke('project:load'),
 
+  // 打开文件夹对话框，将所选目录设为项目并返回文件树数据；取消时返回 { cancelled:true }。
+  openProjectFolder: () => ipcRenderer.invoke('project:open-folder'),
+
   // 读取项目目录内任意文件；返回 { ok, path, content, binary, mime, size, ext }。
   readFile: (filePath) => ipcRenderer.invoke('file:read', filePath),
 
@@ -61,6 +64,14 @@ contextBridge.exposeInMainWorld('editorAPI', {
     const listener = (_event, info) => callback(info);
     ipcRenderer.on('lsp:project-changed', listener);
     return () => ipcRenderer.removeListener('lsp:project-changed', listener);
+  },
+
+  // 订阅扩展名关联打开的文件（主进程经 second-instance 或启动参数转发）。
+  // 回调参数为文件绝对路径；是否属于项目、是否已设置项目都无影响。
+  onOpenExternalFile: (callback) => {
+    const listener = (_event, filePath) => callback(filePath);
+    ipcRenderer.on('file:open-external', listener);
+    return () => ipcRenderer.removeListener('file:open-external', listener);
   },
 
   minimizeWindow: () => ipcRenderer.send('window:minimize'),

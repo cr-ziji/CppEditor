@@ -306,7 +306,9 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 #fileframe{
     width: 300px;
     flex-shrink: 0;
-    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 #resizer{
@@ -321,15 +323,49 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     background-color: #0078d4;
 }
 
-#fileframe{
-    overflow: hidden auto;
+/* 文件树顶部工具栏（切换文件夹按钮） */
+#filetoolbar{
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 3px 6px;
+    border-bottom: 1px solid #3c3c3c;
 }
 
-#fileframe::-webkit-scrollbar{
+#switch-folder-btn{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#switch-folder-btn:hover{
+    background: #2a2d2e;
+}
+
+#switch-folder-btn img{
+    width: 18px;
+    height: 18px;
+}
+
+/* 可滚动的文件树区域 */
+#filetree{
+    flex: 1;
+    overflow: auto;
+    padding: 5px;
+}
+
+#filetree::-webkit-scrollbar{
     width: 4px;
 }
 
-#fileframe::-webkit-scrollbar-thumb{
+#filetree::-webkit-scrollbar-thumb{
     background: #3c3c3c;
 }
 
@@ -377,6 +413,29 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     flex: 1;
     min-width: 0;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+}
+
+/* 未打开文件夹时显示的蓝色「打开文件夹」按钮（类似 VSCode） */
+#open-folder-btn{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 20px auto;
+    padding: 8px 18px;
+    background: #0e639c;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+#open-folder-btn:hover{
+    background: #1177bb;
+}
+
+#open-folder-btn img{
+    width: 18px;
+    height: 18px;
 }

@@ -351,10 +351,13 @@ function watchProject() {
   };
 }
 
-// 应用自身写入文件后，同步更新 watcher 快照，避免下一轮轮询误报「内容修改」
+// 应用自身写入文件后，同步更新 watcher 快照，避免下一轮轮询误报「内容修改」。
+// 只跟踪项目目录内的文件：项目外的文件（扩展名关联打开的）不会进入快照，
+// 否则会被误判为「删除」并关闭对应标签页。
 function updateSnapshotEntry(filePath) {
   if (!projectWatcher || !projectWatcher.snapshot) return;
   const resolved = path.resolve(filePath);
+  if (!projectPath || !isWithin(projectPath, resolved)) return;
   const p = resolved.replace(/\\/g, '/');
   try {
     const st = fs.statSync(resolved);
@@ -629,6 +632,17 @@ async function chooseSaveDirectory() {
   return result.filePaths[0];
 }
 
+// 选择要打开的文件夹（左侧「打开文件夹」按钮）
+async function chooseProjectDirectory() {
+  const win = BrowserWindow.getAllWindows()[0];
+  const result = await dialog.showOpenDialog(win, {
+    title: '打开文件夹',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+}
+
 function setupSaveIpc() {
   // 启动时恢复上次的保存路径与文件内容
   loadSettings();
@@ -718,19 +732,32 @@ function setupProjectIpc() {
       return { projectDir: projectPath, files: [] };
     }
   })
+
+  // 左侧「打开文件夹」按钮：选择目录作为项目，返回文件树数据
+  ipcMain.handle('project:open-folder', async () => {
+    const chosen = await chooseProjectDirectory();
+    if (!chosen) return { cancelled: true };
+    projectPath = chosen;
+    writeCompileCommands(chosen);
+    persistSettings();
+    watchProject();
+    try {
+      return { projectDir: chosen, files: await readProjectDir(chosen) };
+    } catch (err) {
+      return { projectDir: chosen, files: [] };
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------
 // 文件读写：渲染进程打开项目树中的任意文件 / 保存当前标签页
 // ---------------------------------------------------------------------------
 function setupFileIpc() {
-  // 读取项目目录内的任意文件。文本返回 UTF-8 字符串，图片/二进制返回 base64。
+  // 读取任意文件。文本返回 UTF-8 字符串，图片/二进制返回 base64。
+  // 不限于项目目录内：扩展名关联打开的外部文件也需要能读取。
   ipcMain.handle('file:read', async (_event, filePath) => {
     try {
       const resolved = path.resolve(filePath);
-      if (!projectPath || !isWithin(projectPath, resolved)) {
-        return { ok: false, message: '路径不在当前项目目录内' };
-      }
       const buf = await fs.promises.readFile(resolved);
       const ext = path.extname(resolved).toLowerCase();
       const image = IMAGE_EXTS.has(ext);
@@ -755,16 +782,14 @@ function setupFileIpc() {
     }
   });
 
-  // 将文本内容写回项目目录内的指定文件（配合当前激活标签页）
+  // 将文本内容写回指定文件（配合当前激活标签页）。
+  // 不限于项目目录内：外部打开的文件也可保存回原路径。
   ipcMain.handle('file:save', async (_event, filePath, content) => {
     if (typeof content !== 'string') {
       return { ok: false, message: '要保存的内容无效' };
     }
     try {
       const resolved = path.resolve(filePath);
-      if (!projectPath || !isWithin(projectPath, resolved)) {
-        return { ok: false, message: '路径不在当前项目目录内' };
-      }
       fs.writeFileSync(resolved, content, 'utf8');
       updateSnapshotEntry(resolved);
       return { ok: true, path: resolved };
@@ -896,6 +921,16 @@ function createWindow() {
     EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT)
   );
 
+  // 页面加载完成后，若有待打开的关联文件（启动时带文件参数，或加载期间收到
+  // 第二个实例转发过来的文件），通知渲染进程以标签页形式打开。
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingExternalFile) {
+      const f = pendingExternalFile;
+      pendingExternalFile = null;
+      mainWindow.webContents.send('file:open-external', f);
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -941,6 +976,9 @@ app.whenReady().then(() => {
   setupProjectIpc();
   setupFileIpc();
   setupRunIpc();
+  // 启动时通过扩展名关联打开的文件：记入待打开队列，页面加载后交给渲染进程
+  const external = findExternalFile(process.argv);
+  if (external) pendingExternalFile = external;
   createWindow();
 
   app.on('activate', () => {
@@ -956,3 +994,51 @@ app.on('will-quit', () => {
   stopProjectWatcher();
   stopClangd();
 });
+
+// --- 单实例 + 扩展名关联打开 ------------------------------------------------
+// 从命令行参数中找出通过扩展名关联（或命令行）传入的源文件。
+// 过滤掉应用自身、以 - 开头的开关以及不存在的路径。
+const FILE_ASSOC_EXTS = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh', '.hxx', '.ino']);
+
+function findExternalFile(argv) {
+  if (!Array.isArray(argv)) return null;
+  for (const a of argv) {
+    if (typeof a !== 'string' || !a || a.startsWith('-')) continue;
+    const ext = path.extname(a).toLowerCase();
+    if (!ext || !FILE_ASSOC_EXTS.has(ext)) continue;
+    try {
+      const resolved = path.resolve(a);
+      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
+    } catch {
+      /* 忽略无法访问的路径 */
+    }
+  }
+  return null;
+}
+
+// 待打开的外部文件：页面加载前存入，did-finish-load 后推送给渲染进程
+let pendingExternalFile = null;
+
+function deliverExternalFile(filePath) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingExternalFile = filePath;
+    return;
+  }
+  mainWindow.webContents.send('file:open-external', filePath);
+}
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  // 第二个实例启动：聚焦已有窗口，并把关联的文件以标签页形式打开。
+  // 文件是否属于当前项目、是否已设置项目，都不影响这次打开。
+  app.on('second-instance', (_event, argv) => {
+    const file = findExternalFile(argv);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+    if (file) deliverExternalFile(file);
+  });
+}

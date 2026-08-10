@@ -347,7 +347,7 @@ function updateCursor(position) {
 function updateFileLabel() {
   const el = document.getElementById('file-path');
   const t = activeTab();
-  const label = t ? (t.path || t.name) : FILE_PATH;
+  const label = t ? (t.path || t.name) : '';
   if (el) el.textContent = String(label).replace(/\\/g, '/');
   window.__cppeditor.savedPath = t ? t.path : null;
 }
@@ -1002,14 +1002,62 @@ function rendererFileTree(paths, faNode) {
 let projectFileTree = [];
 let projectDom = null;
 
+// 弹出文件夹选择框并作为项目打开；选中后刷新左侧文件树。
+// 「打开文件夹」大按钮与「切换文件夹」小按钮共用此逻辑。
+async function pickProjectFolder() {
+  const result = await window.editorAPI.openProjectFolder();
+  if (!result || result.cancelled) return;
+  projectDir = result.projectDir || projectDir;
+  await loadProjectFile();
+}
+
+// 未打开任何文件夹时，在左侧显示一个蓝色的「打开文件夹」按钮（类似 VSCode）。
+function renderOpenFolderButton(container) {
+  const btn = document.createElement('button');
+  btn.id = 'open-folder-btn';
+  btn.type = 'button';
+  const img = document.createElement('img');
+  img.src = getFileIcon('folder');
+  const span = document.createElement('span');
+  span.textContent = '打开文件夹';
+  btn.appendChild(img);
+  btn.appendChild(span);
+  btn.addEventListener('click', pickProjectFolder);
+  container.appendChild(btn);
+}
+
+// 已打开项目时，在文件树顶部显示一个小图标按钮，点击可切换文件夹
+function renderSwitchFolderButton(toolbar) {
+  const btn = document.createElement('button');
+  btn.id = 'switch-folder-btn';
+  btn.type = 'button';
+  btn.title = '切换文件夹';
+  const img = document.createElement('img');
+  img.src = getFileIcon('folder');
+  btn.appendChild(img);
+  btn.addEventListener('click', pickProjectFolder);
+  toolbar.appendChild(btn);
+}
+
+// 确保项目目录信息已加载（init 与 startEditor 共享同一个加载过程）
+let projectLoadPromise = null;
+function ensureProjectLoaded() {
+  if (!projectLoadPromise) projectLoadPromise = loadProjectFile();
+  return projectLoadPromise;
+}
+
 async function loadProjectFile(){
   const projectInf = await window.editorAPI.loadProject();
   if (projectInf && projectInf.projectDir) projectDir = projectInf.projectDir;
-  const frame = document.getElementById('fileframe');
-  if (frame) frame.innerHTML = '';
-  if (!projectInf || !projectInf.files || projectInf.files.length === 0) {
+  const treeEl = document.getElementById('filetree');
+  const toolbar = document.getElementById('filetoolbar');
+  if (treeEl) treeEl.innerHTML = '';
+  if (toolbar) toolbar.innerHTML = '';
+  if (!projectInf || !projectInf.projectDir) {
+    // 尚未设置项目路径：什么都不打开，仅显示「打开文件夹」按钮
     projectFileTree = [];
     projectDom = null;
+    if (treeEl) renderOpenFolderButton(treeEl);
     return;
   }
   const projectTree = buildFileTree(projectInf.files, projectInf.projectDir);
@@ -1037,7 +1085,9 @@ async function loadProjectFile(){
   projectChildren.classList.add('children');
   rendererFileTree(projectFileTree, projectChildren);
   projectDom.appendChild(projectChildren);
-  document.getElementById('fileframe').appendChild(projectDom);
+  if (treeEl) treeEl.appendChild(projectDom);
+  // 已打开项目：顶部显示「切换文件夹」按钮
+  if (toolbar) renderSwitchFolderButton(toolbar);
   // 树已就绪，应用暂存的文件变化
   if (treePendingInfo) {
     const pending = treePendingInfo;
@@ -1404,6 +1454,18 @@ async function openFileTab(path, opts) {
   activateTab(tab);
 }
 
+// 没有任何打开的标签页时，隐藏编辑器内容（visibility 保留布局占位，
+// 状态栏不会上移；不能 display:none，否则底部状态栏会被顶上去）
+function showEmptyState() {
+  const econt = document.getElementById('editor');
+  if (econt) econt.style.visibility = 'hidden';
+  const host = document.getElementById('fileview');
+  if (host) {
+    host.style.display = 'none';
+    host.innerHTML = '';
+  }
+}
+
 function activateTab(tab) {
   const prev = activeTab();
   activeTabId = tab.id;
@@ -1415,7 +1477,10 @@ function activateTab(tab) {
       host.style.display = 'none';
       host.innerHTML = '';
     }
-    if (econt) econt.style.display = '';
+    if (econt) {
+      econt.style.display = '';
+      econt.style.visibility = 'visible';
+    }
     editor.setModel(tab.model);
     if (editor.layout) editor.layout();
     if (!tab.restoring) editor.focus();
@@ -1575,15 +1640,9 @@ function closeTab(id) {
       activateTab(next);
     } else {
       activeTabId = null;
-      const econt = document.getElementById('editor');
-      if (econt) econt.style.display = '';
       editor.setModel(null);
       if (editor.layout) editor.layout();
-      const host = document.getElementById('fileview');
-      if (host) {
-        host.style.display = 'none';
-        host.innerHTML = '';
-      }
+      showEmptyState();
       if (lsp && lsp.initialized && lsp.lastDocUri) {
         try {
           lsp.connection.sendNotification(proto.DidCloseTextDocumentNotification.type, {
@@ -1673,48 +1732,24 @@ async function startEditor() {
   setDiagCounts(0, 0);
   setLspState('connecting', '正在连接 clangd...');
 
-  // 启动时尝试恢复上次保存的项目（目录 + main.cpp 内容）
-  let restored = null;
-  try {
-    restored = await window.editorAPI.getSaved();
-  } catch (e) {
-    /* 恢复失败时使用默认空内容 */
-  }
-  if (restored && restored.projectDir) {
-    applyProjectDir(restored.projectDir, restored.path);
-  }
+  // 默认不显示任何标签页：隐藏编辑器区域（有待打开文件时会由 activateTab 重新显示）
+  showEmptyState();
 
-  // 编辑器就绪前用户已点击文件树：补开该文件
+  // 等待项目目录信息就绪（决定左侧显示「打开文件夹」还是项目树）。
+  // 每次启动默认不自动打开任何标签页：不恢复上次文件，也不新建未命名页。
+  await ensureProjectLoaded();
+
+  // 编辑器就绪前用户已点击文件树 / 关联文件已请求打开：补开该文件
   if (pendingOpenPath) {
     const p = pendingOpenPath;
     const o = pendingOpenOpts;
     pendingOpenPath = null;
     pendingOpenOpts = null;
     await openFileTab(p, o);
-  } else if (restored && restored.ok && restored.path) {
-    await openFileTab(restored.path, { content: restored.content, restore: true });
-  } else if (projectDir) {
-    await openFileTab(pathJoin(projectDir, 'main.cpp'));
-  } else {
-    // 尚无项目：打开一个未命名标签页，首次保存时选择目录
-    const tab = {
-      id: ++tabSeq,
-      name: '未命名',
-      path: null,
-      kind: 'text',
-      dirty: false,
-      restoring: true,
-      model: null,
-      savedContent: DEFAULT_CODE,
-    };
-    tab.model = monaco.editor.createModel(DEFAULT_CODE, 'cpp');
-    tabs.push(tab);
-    renderTabs();
-    activateTab(tab);
   }
 
   window.__cppeditor.stage = 'editor-ready';
-  editor.focus();
+  if (activeTab()) editor.focus();
   bootstrap();
 }
 
@@ -1794,7 +1829,13 @@ function init() {
 
   initHeader();
 
-  loadProjectFile();
+  ensureProjectLoaded();
+
+  // 扩展名关联打开的文件（启动参数 / 第二个实例转发）：无论是否属于项目、
+  // 是否已设置项目，都直接以标签页打开。
+  window.editorAPI.onOpenExternalFile((filePath) => {
+    if (filePath) openFileTab(filePath);
+  });
 
   // 项目目录文件增删：通知 clangd 重新索引（compile_commands.json 已在主进程重建）
   window.editorAPI.onProjectChanged((info) => {
