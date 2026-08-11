@@ -57,23 +57,6 @@
         "zh_CN"
       ],
       "language": "2052"
-    },
-    "fileAssociations": [
-      {
-        "ext": "c",
-        "name": "C Source File",
-        "icon": "resources/icons/c.ico"
-      },
-      {
-        "ext": "cpp",
-        "name": "C++ Source File",
-        "icon": "resources/icons/cpp.ico"
-      },
-      {
-        "ext": "h",
-        "name": "C/C++ Header File",
-        "icon": "resources/icons/h.ico"
-      }
-    ]
+    }
   }
 }
