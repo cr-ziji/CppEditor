@@ -148,12 +148,16 @@ function getMingwRoot() {
 }
 
 /**
- * 计算 mingw 头文件搜索路径，作为 clangd 的 fallbackFlags 通过 LSP initialize
- * 的 initializationOptions 下发（clangd 22 已移除 --extra-arg 命令行参数）。
+ * 计算 mingw 头文件搜索路径与目标平台参数。
+ *
+ * 注意：这里不写死 -std。因为 -std=c++17 对 C 语言是非法参数
+ * （Invalid argument '-std=c++17' not allowed with 'C'），而 fallbackFlags
+ * 是全局的、无法按文件语言区分；-std 只能放进 compile_commands.json 的
+ * 逐文件参数中（.c → -std=c11，.cpp → -std=c++17）。
  */
-function buildFallbackFlags() {
+function buildBaseFlags() {
   const mingw = getMingwRoot();
-  const flags = ['--target=x86_64-w64-mingw32', '-std=c++17'];
+  const flags = ['--target=x86_64-w64-mingw32'];
 
   const pushIsystem = (dir) => {
     if (!dir) return;
@@ -232,17 +236,23 @@ function findSourceFiles(dir, maxDepth = 8) {
   return out;
 }
 
-// 在项目目录生成 compile_commands.json，让 clangd 以相同编译参数索引整个目录
+// 在项目目录生成 compile_commands.json，让 clangd 以相同编译参数索引整个目录。
+// 编译器与 -std 按文件语言区分：.c 用 clang + c11，.cpp 用 clang++ + c++17。
 function writeCompileCommands(projectDir) {
   try {
-    const flags = ['clang++', ...buildFallbackFlags()];
+    const base = buildBaseFlags();
     let files = findSourceFiles(projectDir);
     if (!files.length) files = [path.join(projectDir, 'main.cpp')];
-    const entries = files.map((file) => ({
-      directory: projectDir,
-      file,
-      arguments: [...flags, file],
-    }));
+    const entries = files.map((file) => {
+      const isC = path.extname(file).toLowerCase() === '.c';
+      const compiler = isC ? 'clang' : 'clang++';
+      const std = isC ? '-std=c11' : '-std=c++17';
+      return {
+        directory: projectDir,
+        file,
+        arguments: [compiler, ...base, std, file],
+      };
+    });
     fs.writeFileSync(
       path.join(projectDir, 'compile_commands.json'),
       JSON.stringify(entries, null, 2),
@@ -574,7 +584,7 @@ function setupLspIpc() {
       ok: result.ok,
       message: result.message,
       clangdPath: result.clangdPath,
-      fallbackFlags: buildFallbackFlags(),
+      fallbackFlags: buildBaseFlags(),
       offsetEncoding: 'utf-16',
       projectDir: projectPath,
     };
