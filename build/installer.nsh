@@ -134,29 +134,55 @@ FunctionEnd
 ; ---------- 系统 PATH ----------
 ; 卸载器中的函数必须以 "un." 为前缀，且未引用的 un. 函数会被当作警告（warningsAsErrors），
 ; 因此每个函数只在其被使用的构建中定义：
+;   - cppEdStripMingwFromPath     核心逻辑：去掉以 \resources\mingw\bin 结尾的分段
+;                                   不依赖 $INSTDIR，跨盘符卸载/升级也能清理干净
 ;   - cppEdAddGccBinToPath        仅在安装器中调用
 ;   - cppEdRemoveGccBinFromPath   仅在卸载器中调用
-;   - cppEdStrRemoveSubstring     两个构建都用到（各自一份）
 
-; 从 $0 中删除所有 $1 子串，结果写回 $0
-!macro cppEdDefineStrRemoveSubstring FN_PREFIX
-Function ${FN_PREFIX}cppEdStrRemoveSubstring
-  StrLen $4 $1
-  StrLen $6 $0
+; 从 $0（PATH 字符串）中去掉所有以 \resources\mingw\bin 结尾的分段。
+; 按 ';' 逐段扫描：结尾匹配的分段丢弃，其余保留并重组，最后去掉首尾多余分号。
+!macro cppEdDefineStripMingwFromPath FN_PREFIX
+Function ${FN_PREFIX}cppEdStripMingwFromPath
+  StrLen $9 $0
+  ${If} $9 == 0
+    Return
+  ${EndIf}
   StrCpy $5 ""
+  StrCpy $6 ""
   StrCpy $3 0
-  cppEdRemLoop:
-    IntCmp $3 $6 cppEdRemDone
-    StrCpy $7 $0 $4 $3
-    StrCmp $7 $1 cppEdRemSkip
-    StrCpy $7 $0 1 $3
-    StrCpy $5 "$5$7"
+  cppEdStripLoop:
+    IntCmp $3 $9 cppEdStripFlush cppEdStripRead cppEdStripFlush
+  cppEdStripRead:
+    StrCpy $8 $0 1 $3
     IntOp $3 $3 + 1
-    Goto cppEdRemLoop
-  cppEdRemSkip:
-    IntOp $3 $3 + $4
-    Goto cppEdRemLoop
-  cppEdRemDone:
+    StrCmp $8 ";" 0 cppEdStripSegAppend
+    Goto cppEdStripFlush
+  cppEdStripSegAppend:
+    StrCpy $6 "$6$8"
+    Goto cppEdStripLoop
+  cppEdStripFlush:
+    ${If} $6 != ""
+      StrLen $4 $6
+      IntOp $7 $4 - 20
+      ${If} $7 >= 0
+        StrCpy $8 $6 20 $7
+        StrCmp $8 "\resources\mingw\bin" 0 cppEdStripKeep
+        Goto cppEdStripSkip
+      ${EndIf}
+      cppEdStripKeep:
+        StrCpy $5 "$5$6;"
+    ${EndIf}
+  cppEdStripSkip:
+    StrCpy $6 ""
+    IntCmp $3 $9 cppEdStripDone cppEdStripLoop cppEdStripLoop
+  cppEdStripDone:
+    StrLen $4 $5
+    ${If} $4 > 0
+      IntOp $4 $4 - 1
+      StrCpy $8 $5 1 $4
+      StrCmp $8 ";" 0 +2
+        StrCpy $5 $5 $4
+    ${EndIf}
     StrCpy $0 $5
 FunctionEnd
 !macroend
@@ -167,43 +193,26 @@ Function ${FN_PREFIX}cppEdRemoveGccBinFromPath
   ${If} $0 == ""
     Return
   ${EndIf}
-  StrCpy $1 "$INSTDIR\resources\mingw\bin"
   StrCpy $2 $0
-  Call ${FN_PREFIX}cppEdStrRemoveSubstring
+  Call ${FN_PREFIX}cppEdStripMingwFromPath
+  ; 安全规则：绝不删除 Path 值。
+  ; 只有在结果非空且确实发生变化时才写回，否则保持原样。
   ${If} $0 == $2
     Return
   ${EndIf}
-
-  StrCpy $1 "$INSTDIR\resources\mingw\bin;"
-  Call ${FN_PREFIX}cppEdStrRemoveSubstring
-  StrCpy $1 ";$INSTDIR\resources\mingw\bin"
-  Call ${FN_PREFIX}cppEdStrRemoveSubstring
-  StrCpy $1 ";;"
-  Call ${FN_PREFIX}cppEdStrRemoveSubstring
-
-  StrCpy $3 $0 1
-  StrCmp $3 ";" 0 +3
-  StrCpy $0 $0 "" 1
-  StrLen $4 $0
-  IntOp $4 $4 - 1
-  StrCpy $3 $0 1 $4
-  StrCmp $3 ";" 0 +3
-  StrCpy $0 $0 $4
-
   ${If} $0 == ""
-    DeleteRegValue HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-  ${Else}
-    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" $0
+    Return
   ${EndIf}
+  WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" $0
   System::Call `user32::SendMessageTimeout(i 0xFFFF, i 0x001A, i 0, w "Environment", i 2, i 5000, *l .r2) i .r3`
 FunctionEnd
 !macroend
 
 !ifdef BUILD_UNINSTALLER
-  !insertmacro cppEdDefineStrRemoveSubstring "un."
+  !insertmacro cppEdDefineStripMingwFromPath "un."
   !insertmacro cppEdDefineRemoveGccBinFromPath "un."
 !else
-  !insertmacro cppEdDefineStrRemoveSubstring ""
+  !insertmacro cppEdDefineStripMingwFromPath ""
 !endif
 
 !ifndef BUILD_UNINSTALLER
@@ -213,17 +222,18 @@ Function cppEdAddGccBinToPath
     Return
   ${EndIf}
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-  ${If} $0 == ""
+  ${If} $0 != ""
+    ; 先清理旧安装残留的 mingw 条目，再追加当前安装目录，保证只有一条且不会出现 ";;"
+    Call cppEdStripMingwFromPath
+    StrLen $4 $0
+    ${If} $4 > 0
+      StrCpy $0 "$0;$1"
+    ${Else}
+      StrCpy $0 "$1"
+    ${EndIf}
+  ${Else}
     StrCpy $0 "$1"
-    Goto cppEdPathWrite
   ${EndIf}
-  StrCpy $2 $0
-  Call cppEdStrRemoveSubstring
-  ${If} $0 != $2
-    Return
-  ${EndIf}
-  StrCpy $0 "$2;$1"
-  cppEdPathWrite:
   WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" $0
   System::Call `user32::SendMessageTimeout(i 0xFFFF, i 0x001A, i 0, w "Environment", i 2, i 5000, *l .r2) i .r3`
 FunctionEnd
