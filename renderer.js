@@ -150,6 +150,20 @@ function normalizeUri(u) {
   return IS_WIN ? u.toLowerCase() : u;
 }
 
+// 将 LSP 返回的 file:// URI（clangd 在 Windows 上可能带 %3A / 小写盘符）
+// 还原为磁盘路径（Windows 下使用反斜杠，便于 readFile / findTabByPath）。
+function pathFromLspUri(uri) {
+  if (!uri || typeof uri !== 'string') return null;
+  let s = uri;
+  try {
+    s = decodeURIComponent(s);
+  } catch { /* ignore */ }
+  if (s.indexOf('file://') === 0) s = s.slice('file://'.length);
+  s = s.replace(/^\/+/, '');
+  if (IS_WIN) s = s.replace(/\//g, '\\');
+  return s || null;
+}
+
 const MAX_RECONNECT = 3;
 const INIT_TIMEOUT_MS = 15000;
 
@@ -832,6 +846,56 @@ async function provideHover(model, position) {
     console.warn('[LSP] 悬停请求失败:', err);
     return null;
   }
+}
+
+// 跳转到指定位置的符号定义（Ctrl+左键）。
+// 同一文件内直接定位；其他文件（无论是否已打开）通过标签页打开并定位。
+async function jumpToDefinition(position) {
+  const doc = currentTextDoc();
+  if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) return;
+  syncNow();
+  let result;
+  try {
+    result = await lsp.connection.sendRequest(proto.DefinitionRequest.type, {
+      textDocument: { uri: doc.uri },
+      position: toLspPosition(position),
+    });
+  } catch (err) {
+    console.warn('[LSP] 定义跳转请求失败:', err);
+    return;
+  }
+  const items = Array.isArray(result) ? result : result ? [result] : [];
+  const loc = items[0];
+  if (!loc) return;
+  // 兼容 Location（uri/range）与 LocationLink（targetUri/targetRange）
+  const targetUri = loc.targetUri || loc.uri;
+  const range = loc.targetRange || loc.range || loc.targetSelectionRange;
+  if (!targetUri) return;
+  const targetPath = pathFromLspUri(targetUri);
+  if (!targetPath) return;
+
+  const reveal = () => {
+    if (!range) return;
+    if (!editor || !editor.getModel()) return;
+    const r = toMonacoRange(range);
+    editor.setPosition({ lineNumber: r.startLineNumber, column: r.startColumn });
+    editor.revealRangeInCenter(r, monaco.editor.ScrollType.Smooth);
+  };
+
+  const t = activeTab();
+  if (t && t.path && pathEquals(targetPath, t.path)) {
+    // 定义就在当前文件：直接定位
+    reveal();
+    return;
+  }
+  const existing = findTabByPath(targetPath);
+  if (existing && existing.kind === 'text' && existing.model) {
+    activateTab(existing);
+    reveal();
+    return;
+  }
+  await openFileTab(targetPath);
+  reveal();
 }
 
 function buildFileTree(paths, basePath = '') {
@@ -1872,6 +1936,15 @@ async function startEditor() {
   });
   editor.onDidChangeCursorPosition((e) => updateCursor(e.position));
   updateCursor({ lineNumber: 1, column: 1 });
+
+  // Ctrl + 左键：跳转到符号定义
+  editor.onMouseDown((e) => {
+    if (!(e.event.ctrlKey || e.event.metaKey)) return;
+    if (!e.event.leftButton) return;
+    const t = e.target;
+    if (!t || t.type !== monaco.editor.MouseTargetType.CONTENT_TEXT || !t.position) return;
+    jumpToDefinition(t.position);
+  });
 
   // LSP 驱动的代码补全
   monaco.languages.registerCompletionItemProvider(['cpp', 'c'], {
