@@ -39,7 +39,7 @@ header #app-title {
     margin-right: auto;
 }
 
-header #run-btn{
+header #run-btn, header #setting-btn{
     -webkit-app-region: no-drag;
     width: 30px;
     height: 30px;
@@ -53,12 +53,16 @@ header #run-btn{
     margin-right: 30px;
 }
 
-header #run-btn:hover{
+header #run-btn:hover, header #setting-btn:hover{
     background: #3A3B3F;
 }
 
 header #run-btn img{
     width: 20px;
+}
+
+header #setting-btn img{
+    width: 16px;
 }
 
 header #minimize-btn, header #maximize-btn, header #unmaximize-btn, header #close-btn {
@@ -309,14 +313,16 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    border-right: 1px solid #3c3c3c;
 }
 
 #resizer{
     width: 4px;
     height: 100%;
     flex-shrink: 0;
-    border-right: 1px solid #3c3c3c;
     cursor: ew-resize;
+    margin: 0 -2px;
+    z-index: 999;
 }
 
 #resizer:hover{
@@ -362,11 +368,16 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 }
 
 #filetree::-webkit-scrollbar{
-    width: 4px;
+    width: 14px;
+    height: 14px;
 }
 
 #filetree::-webkit-scrollbar-thumb{
     background: #3c3c3c;
+}
+
+#filetree::-webkit-scrollbar-corner {
+    background-color: transparent;
 }
 
 #fileframe .folder, #fileframe .file{

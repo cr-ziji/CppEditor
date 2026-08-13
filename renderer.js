@@ -1811,6 +1811,10 @@ function initHeader(){
       showSaveStatus(firstLine.slice(0, 120), true);
     }
   })
+
+  document.getElementById('setting-btn').addEventListener('click', () => {
+    window.editorAPI.openSettingWindow();
+  })
 }
 
 // ---------------------------------------------------------------------------

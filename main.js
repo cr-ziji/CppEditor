@@ -126,6 +126,7 @@ function registerEditorProtocol() {
 // clangd 子进程管理
 // ---------------------------------------------------------------------------
 let mainWindow = null;
+let settingWindow = null;
 let clangd = null;                 // ChildProcess 实例
 let stdoutBuffer = Buffer.alloc(0);
 let pendingContentLength = null;
@@ -955,6 +956,45 @@ function createWindow() {
   mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
+function createSettingWindow() {
+  settingWindow = new BrowserWindow({
+    width: 500,
+    height: 600,
+    minWidth: 500,
+    minHeight: 600,
+    backgroundColor: '#1e1e1e',
+    autoHideMenuBar: true,
+    title: '设置',
+    frame: false,
+    parent: mainWindow,
+    modal: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  settingWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  settingWindow.loadURL(
+      EDITOR_SCHEME + '://app/setting.html?root=' + encodeURIComponent(APP_ROOT)
+  );
+
+  settingWindow.on('closed', () => {
+    settingWindow = null;
+  });
+
+  settingWindow.on('maximize', () => {
+    emitToRenderer('window:maximized');
+  })
+  settingWindow.on('unmaximize', () => {
+    emitToRenderer('window:unmaximized');
+  })
+
+  settingWindow.webContents.openDevTools({ mode: 'detach' });
+}
+
 function setupWindowIpc() {
   ipcMain.on('window:minimize', () => {
     if (mainWindow){
@@ -974,6 +1014,14 @@ function setupWindowIpc() {
   ipcMain.on('window:close', () => {
     if (mainWindow){
       mainWindow.close();
+    }
+  })
+  ipcMain.on('window:open-setting-window', () => {
+    createSettingWindow();
+  })
+  ipcMain.on('window:close-setting-window', () => {
+    if (settingWindow){
+      settingWindow.close();
     }
   })
 }

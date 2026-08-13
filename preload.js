@@ -80,4 +80,7 @@ contextBridge.exposeInMainWorld('editorAPI', {
   unmaximizeWindow: () => ipcRenderer.send('window:unmaximize'),
   onUnmaximizedWindow: (callback) => ipcRenderer.on('window:unmaximized', callback),
   closeWindow: () => ipcRenderer.send('window:close'),
+
+  openSettingWindow: () => ipcRenderer.send('window:open-setting-window'),
+  closeSettingWindow: () => ipcRenderer.send('window:close-setting-window'),
 });
