@@ -678,6 +678,17 @@ function handleDiagnostics(params) {
   const model = editor && editor.getModel();
   if (!model) return;
 
+  // 工具链内部文件（libstdc++ 等）在独立打开时因非自包含会产生伪报错，
+  // 不展示这些诊断。.tcc/.tpp/.ipp 的语言归属已在 resources/mingw/.clangd
+  // 中用 -x c++-header 配置，避免 clangd 的 "expected exactly one compiler job"。
+  const docPath = pathFromLspUri(doc.uri);
+  if (docPath && isGccFile(docPath)) {
+    monaco.editor.setModelMarkers(model, 'clangd', []);
+    setDiagCounts(0, 0);
+    window.__cppeditor.diagnostics = { errors: 0, warnings: 0, total: 0 };
+    return;
+  }
+
   const markers = (params.diagnostics || []).map((d) => ({
     severity: toMonacoSeverity(d.severity),
     message: d.message || '',
