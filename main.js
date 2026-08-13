@@ -606,6 +606,9 @@ function setupLspIpc() {
 // 保存路径会被持久化到 settings.json，下次启动直接恢复并读取文件内容。
 // ---------------------------------------------------------------------------
 let projectPath = null;
+// 应用设置：projectPath 由主进程维护，compile/editor/templates/shortcuts
+// 分组由设置窗口写入，与 projectPath 一并持久化到同一个 settings.json。
+let appSettings = { projectPath: null };
 
 function settingsFile() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -615,22 +618,40 @@ function loadSettings() {
   try {
     const raw = fs.readFileSync(settingsFile(), 'utf8');
     const s = JSON.parse(raw);
-    if (s && typeof s.projectPath === 'string') projectPath = s.projectPath;
+    if (s && typeof s === 'object') appSettings = s;
   } catch {
     /* 无配置或解析失败时保持默认 */
   }
+  if (typeof appSettings.projectPath === 'string') projectPath = appSettings.projectPath;
 }
 
 function persistSettings() {
+  appSettings.projectPath = projectPath;
   try {
     fs.writeFileSync(
       settingsFile(),
-      JSON.stringify({ projectPath: projectPath }, null, 2),
+      JSON.stringify(appSettings, null, 2),
       'utf8'
     );
   } catch {
     /* 忽略写入失败 */
   }
+}
+
+// 设置窗口读写：只读写 compile/editor/templates/shortcuts 四个分组，
+// projectPath 仍由主进程单独维护，渲染进程发来的补丁不会覆盖它。
+function setupSettingsIpc() {
+  ipcMain.handle('settings:load', () => appSettings);
+
+  ipcMain.handle('settings:save', (_event, patch) => {
+    if (patch && typeof patch === 'object') {
+      for (const key of ['compile', 'editor', 'templates', 'shortcuts']) {
+        if (patch[key] && typeof patch[key] === 'object') appSettings[key] = patch[key];
+      }
+      persistSettings();
+    }
+    return appSettings;
+  });
 }
 
 async function chooseSaveDirectory() {
@@ -971,10 +992,10 @@ function createWindow() {
 
 function createSettingWindow() {
   settingWindow = new BrowserWindow({
-    width: 500,
-    height: 600,
-    minWidth: 500,
-    minHeight: 600,
+    width: 640,
+    height: 620,
+    minWidth: 520,
+    minHeight: 560,
     backgroundColor: '#1e1e1e',
     autoHideMenuBar: true,
     title: '设置',
@@ -1045,6 +1066,7 @@ app.whenReady().then(() => {
   setupLspIpc();
   setupSaveIpc();
   setupProjectIpc();
+  setupSettingsIpc();
   setupFileIpc();
   setupRunIpc();
   // 启动时通过扩展名关联打开的文件：记入待打开队列，页面加载后交给渲染进程

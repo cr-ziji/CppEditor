@@ -450,3 +450,209 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     width: 18px;
     height: 18px;
 }
+
+/* ---------------- 设置窗口：左侧导航 + 右侧内容面板 ---------------- */
+.settings-shell{
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+.settings-nav{
+    width: 68px;
+    flex-shrink: 0;
+    background: #252526;
+    border-right: 1px solid #3c3c3c;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 0;
+    gap: 2px;
+}
+
+.nav-item{
+    border: none;
+    background: none;
+    color: #8a8a8a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 10px 4px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    font-size: 11px;
+    font-family: inherit;
+}
+
+.nav-item img{
+    width: 18px;
+    height: 18px;
+    opacity: 0.6;
+    transition: opacity .15s;
+}
+
+.nav-item:hover{
+    background: #2d2d30;
+    color: #cccccc;
+}
+
+.nav-item:hover img{
+    opacity: 0.9;
+}
+
+.nav-item.active{
+    color: #ffffff;
+    background: #333337;
+    border-left-color: #007acc;
+}
+
+.nav-item.active img{
+    opacity: 1;
+}
+
+.settings-content{
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 18px;
+}
+
+.settings-panel{
+    display: none;
+}
+
+.settings-panel.active{
+    display: block;
+}
+
+.panel-heading{
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #e8e8e8;
+}
+
+.panel-sub{
+    margin: 4px 0 16px;
+    font-size: 12px;
+    color: #8a8a8a;
+}
+
+.group{
+    margin-bottom: 20px;
+}
+
+.group-heading{
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #8a8a8a;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #3c3c3c;
+}
+
+.group .row{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+}
+
+.group .row .label{
+    width: 130px;
+    flex-shrink: 0;
+    font-size: 13px;
+    color: #cccccc;
+}
+
+.group .row input[type="text"],
+.group .row input[type="number"],
+.group .row select{
+    flex: 1;
+    min-width: 0;
+    background: #252526;
+    color: #cccccc;
+    border: 1px solid #3c3c3c;
+    padding: 5px 8px;
+    border-radius: 4px;
+    outline: none;
+    font-size: 13px;
+    user-select: text;
+    transition: border-color .15s;
+}
+
+.group .row input:focus,
+.group .row select:focus,
+.group .row textarea:focus{
+    border-color: #007acc;
+}
+
+.group .row textarea{
+    flex: 1;
+    min-width: 0;
+    background: #252526;
+    color: #cccccc;
+    border: 1px solid #3c3c3c;
+    padding: 8px;
+    border-radius: 4px;
+    outline: none;
+    font-size: 12px;
+    font-family: Consolas, 'Courier New', monospace;
+    resize: vertical;
+    min-height: 72px;
+    white-space: pre;
+    line-height: 1.5;
+    user-select: text;
+}
+
+.group .row input[type="number"]::-webkit-outer-spin-button,
+.group .row input[type="number"]::-webkit-inner-spin-button{
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+/* 模板文本框滚动条：与深色主题适配 */
+.group .row textarea::-webkit-scrollbar{
+    width: 10px;
+}
+
+.group .row textarea::-webkit-scrollbar-track{
+    background: #252526;
+    border-radius: 5px;
+}
+
+.group .row textarea::-webkit-scrollbar-thumb{
+    background: #3c3c3c;
+    border: 2px solid #252526;
+    border-radius: 5px;
+}
+
+.group .row textarea::-webkit-scrollbar-thumb:hover{
+    background: #555555;
+}
+
+.group .row textarea::-webkit-scrollbar-corner {
+    appearance: none;
+    background-color: transparent;
+}
+
+.group .row.check{
+    padding-left: 140px;
+}
+
+.group .row.check label{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #cccccc;
+}
+
+.group .row.check input[type="checkbox"]{
+    accent-color: #007acc;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}

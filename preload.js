@@ -83,4 +83,8 @@ contextBridge.exposeInMainWorld('editorAPI', {
 
   openSettingWindow: () => ipcRenderer.send('window:open-setting-window'),
   closeSettingWindow: () => ipcRenderer.send('window:close-setting-window'),
+
+  // 设置：读取全部设置，以及保存 compile/editor/templates/shortcuts 分组。
+  loadSettings: () => ipcRenderer.invoke('settings:load'),
+  saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
 });

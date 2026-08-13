@@ -12,6 +12,173 @@
         <button id="close-btn"><img src="editor://app/resources/header/close.svg" alt="关闭"></button>
     </header>
 
+    <div class="settings-shell">
+        <nav class="settings-nav">
+            <button class="nav-item active" data-panel="appearance">
+                <img src="editor://app/resources/settings/appearance.svg" alt="外观">
+                <span>外观</span>
+            </button>
+            <button class="nav-item" data-panel="compile">
+                <img src="editor://app/resources/settings/compile.svg" alt="编译">
+                <span>编译</span>
+            </button>
+            <button class="nav-item" data-panel="templates">
+                <img src="editor://app/resources/settings/templates.svg" alt="代码模板">
+                <span>代码模板</span>
+            </button>
+            <button class="nav-item" data-panel="shortcuts">
+                <img src="editor://app/resources/settings/shortcuts.svg" alt="快捷键">
+                <span>快捷键</span>
+            </button>
+        </nav>
+
+        <div class="settings-content">
+            <section class="settings-panel active" data-panel="appearance">
+                <h2 class="panel-heading">外观</h2>
+                <p class="panel-sub">配色、字号与编辑器的括号匹配行为</p>
+
+                <div class="group">
+                    <div class="group-heading">界面</div>
+                    <div class="row">
+                        <label class="label" for="themeMode">配色主题</label>
+                        <select id="themeMode">
+                            <option value="dark">深色</option>
+                            <option value="light">浅色</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="fontSize">编辑器字号</label>
+                        <input type="number" id="fontSize" min="8" max="40" step="1">
+                    </div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">括号匹配</div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="autoClosingBrackets"> 自动补全括号</label>
+                    </div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="autoClosingQuotes"> 自动补全引号</label>
+                    </div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="bracketPairColorization"> 括号对颜色化</label>
+                    </div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="matchBrackets"> 括号匹配高亮</label>
+                    </div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="autoIndent"> 输入时自动缩进</label>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-panel" data-panel="compile">
+                <h2 class="panel-heading">编译与运行</h2>
+                <p class="panel-sub">设置编译与链接使用的命令、语言标准与警告级别</p>
+
+                <div class="group">
+                    <div class="group-heading">编译器</div>
+                    <div class="row">
+                        <label class="label" for="compileCommand">编译命令</label>
+                        <input type="text" id="compileCommand">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="linkCommand">链接命令</label>
+                        <input type="text" id="linkCommand">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="warningLevel">代码警告数量</label>
+                        <select id="warningLevel">
+                            <option value="0">0 - 关闭警告</option>
+                            <option value="1">1 - 基础警告（-W）</option>
+                            <option value="2">2 - 常用警告（-Wall）</option>
+                            <option value="3">3 - 更多警告（-Wall -Wextra）</option>
+                            <option value="4">4 - 全部警告（-Wall -Wextra -Wpedantic）</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">语言标准</div>
+                    <div class="row">
+                        <label class="label" for="languageStandardCpp">C++ 标准</label>
+                        <select id="languageStandardCpp">
+                            <option value="c++11">C++11</option>
+                            <option value="c++14">C++14</option>
+                            <option value="c++17">C++17</option>
+                            <option value="c++20">C++20</option>
+                            <option value="c++23">C++23</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="languageStandardC">C 标准</label>
+                        <select id="languageStandardC">
+                            <option value="c11">C11</option>
+                            <option value="c17">C17</option>
+                            <option value="c23">C23</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-panel" data-panel="templates">
+                <h2 class="panel-heading">代码模板</h2>
+                <p class="panel-sub">新建各类文件时自动填入的默认内容</p>
+
+                <div class="group">
+                    <div class="row">
+                        <label class="label" for="templateCpp">C++ 源文件（.cpp）</label>
+                        <textarea id="templateCpp" rows="5"></textarea>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="templateC">C 源文件（.c）</label>
+                        <textarea id="templateC" rows="5"></textarea>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="templateHeader">头文件（.h / .hpp）</label>
+                        <textarea id="templateHeader" rows="5"></textarea>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-panel" data-panel="shortcuts">
+                <h2 class="panel-heading">快捷键</h2>
+                <p class="panel-sub">常用的基础操作快捷键（当前仅记录，尚未生效）</p>
+
+                <div class="group">
+                    <div class="row">
+                        <label class="label" for="shortcutNewFile">新建文件</label>
+                        <input type="text" id="shortcutNewFile">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="shortcutSaveFile">保存文件</label>
+                        <input type="text" id="shortcutSaveFile">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="shortcutCompileRun">编译并运行</label>
+                        <input type="text" id="shortcutCompileRun">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="shortcutJumpDefinition">跳转到定义</label>
+                        <input type="text" id="shortcutJumpDefinition">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="shortcutFindText">查找文本</label>
+                        <input type="text" id="shortcutFindText">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="shortcutNextTab">下一个标签页</label>
+                        <input type="text" id="shortcutNextTab">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="shortcutCloseTab">关闭标签页</label>
+                        <input type="text" id="shortcutCloseTab">
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
     <script src="editor://app/setting.js"></script>
 </body>
 </html>
