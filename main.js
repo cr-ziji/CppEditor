@@ -1,6 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, dialog, ipcMain, protocol } = require('electron');
+const windowStateKeeper = require('electron-window-state');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -910,9 +911,16 @@ function setupRunIpc() {
 // 窗口与应用生命周期
 // ---------------------------------------------------------------------------
 function createWindow() {
+  let mainWindowState = windowStateKeeper({
+    defaultWidth: 1280,
+    defaultHeight: 860
+  });
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    x: mainWindowState.x,
+    y: mainWindowState.y,
+    width: mainWindowState.width,
+    height: mainWindowState.height,
     minWidth: 640,
     minHeight: 400,
     backgroundColor: '#1e1e1e',
@@ -925,6 +933,8 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  mainWindowState.manage(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
@@ -940,6 +950,9 @@ function createWindow() {
       pendingExternalFile = null;
       mainWindow.webContents.send('file:open-external', f);
     }
+    // electron-window-state 恢复的最大化发生在页面加载前，maximize 事件早于
+    // 渲染进程监听而被丢弃，这里按窗口当前实际状态校准自定义标题栏按钮
+    emitToRenderer(mainWindow.isMaximized() ? 'window:maximized' : 'window:unmaximized');
   });
 
   mainWindow.on('closed', () => {
