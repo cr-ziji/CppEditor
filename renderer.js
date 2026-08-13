@@ -536,6 +536,11 @@ async function bootstrap() {
         },
         hover: { contentFormat: ['markdown', 'plaintext'] },
         publishDiagnostics: { relatedInformation: false },
+        // 支持 clangd 的语义 token（全量/增量/范围请求，relative 编码）
+        semanticTokens: {
+          requests: { full: { delta: true }, range: true },
+          formats: ['relative'],
+        },
       },
       workspace: {
         workspaceFolders: false,
@@ -567,6 +572,14 @@ async function bootstrap() {
   reconnectAttempts = 0;
   docVersion = 0;
   dirty = false;
+
+  // 若 clangd 支持语义 token，则注册 Monaco 语义高亮提供者
+  if (serverCapabilities.semanticTokensProvider) {
+    registerSemanticHighlighting();
+  }
+  // 强制 Monaco 重新拉取语义 token：注册提供者或 clangd 重连后，已打开文件的
+  // 旧 token 需要刷新（无副作用，无 clangd 语义能力时也安全）
+  refreshSemanticTokens();
 
   connection.sendNotification(proto.InitializedNotification.type, {});
   sendDidOpen();
@@ -1661,6 +1674,161 @@ function closeTab(id) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 6. 语义高亮（clangd semantic tokens）
+//    语法高亮只按关键字/字符串等词法分类；语义高亮由 clangd 按真实编译语义
+//    区分类型、函数、变量、成员、宏等，并支持标准库斜体、已弃用删除线等修饰。
+// ---------------------------------------------------------------------------
+// Monaco 默认语义 token 类型表（名称顺序即索引；主题规则按这些名字匹配上色）
+const SEMANTIC_TOKEN_TYPES = [
+  'comment', 'keyword', 'string', 'number', 'regexp', 'operator',
+  'namespace', 'type', 'struct', 'class', 'interface', 'enum',
+  'typeParameter', 'function', 'member', 'macro', 'variable',
+  'parameter', 'property', 'enumMember', 'event', 'decorator',
+];
+const SEMANTIC_TOKEN_MODIFIERS = [
+  'declaration', 'readonly', 'static', 'deprecated', 'abstract',
+  'async', 'modification', 'documentation', 'defaultLibrary',
+];
+const SEMANTIC_TYPE_INDEX = {};
+SEMANTIC_TOKEN_TYPES.forEach((t, i) => (SEMANTIC_TYPE_INDEX[t] = i));
+const SEMANTIC_MOD_INDEX = {};
+SEMANTIC_TOKEN_MODIFIERS.forEach((m, i) => (SEMANTIC_MOD_INDEX[m] = i));
+// clangd 的 LSP token 类型名 → Monaco 默认类型名（method→member、modifier→keyword 等归一化）
+const LSP_SEMANTIC_TYPE = {
+  namespace: 'namespace', type: 'type', class: 'class', enum: 'enum',
+  interface: 'interface', struct: 'struct', typeParameter: 'typeParameter',
+  parameter: 'parameter', variable: 'variable', property: 'property',
+  enumMember: 'enumMember', event: 'event', function: 'function',
+  method: 'member', macro: 'macro', keyword: 'keyword', modifier: 'keyword',
+  comment: 'comment', string: 'string', number: 'number', regexp: 'regexp',
+  operator: 'operator', decorator: 'decorator',
+};
+
+// VS Code Dark+ 风格的语义配色主题（语义 token 的颜色完全由这里的规则决定）
+function installSemanticTheme() {
+  monaco.editor.defineTheme('cppeditor-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '6A9955', fontStyle: 'italic' },
+      { token: 'keyword', foreground: '569CD6' },
+      { token: 'string', foreground: 'CE9178' },
+      { token: 'number', foreground: 'B5CEA8' },
+      { token: 'regexp', foreground: 'D16969' },
+      { token: 'operator', foreground: 'D4D4D4' },
+      { token: 'namespace', foreground: '4EC9B0' },
+      { token: 'type', foreground: '4EC9B0' },
+      { token: 'struct', foreground: '4EC9B0' },
+      { token: 'class', foreground: '4EC9B0' },
+      { token: 'interface', foreground: '4EC9B0' },
+      { token: 'enum', foreground: '4EC9B0' },
+      { token: 'typeParameter', foreground: '4EC9B0' },
+      { token: 'function', foreground: 'DCDCAA' },
+      { token: 'member', foreground: 'DCDCAA' },
+      { token: 'macro', foreground: 'C586C0' },
+      { token: 'variable', foreground: '9CDCFE' },
+      { token: 'parameter', foreground: '9CDCFE' },
+      { token: 'property', foreground: 'CE9178' },
+      { token: 'enumMember', foreground: 'B5CEA8' },
+      { token: 'event', foreground: 'C586C0' },
+      { token: 'decorator', foreground: 'D7BA7D' },
+      // 已弃用 → 删除线
+      { token: 'type.deprecated', fontStyle: 'strikethrough' },
+      { token: 'function.deprecated', fontStyle: 'strikethrough' },
+      { token: 'member.deprecated', fontStyle: 'strikethrough' },
+      { token: 'variable.deprecated', fontStyle: 'strikethrough' },
+    ],
+    colors: {},
+  });
+  monaco.editor.setTheme('cppeditor-dark');
+}
+
+// 把 clangd 的 LSP 语义 token 数据（按 clangd 的 legend 索引编码）转换成
+// 使用我们注册的 Monaco legend 索引的 Uint32Array。
+function convertSemanticTokens(lspData) {
+  if (!lspData || !lspData.length) return { data: new Uint32Array(0) };
+  const legend = serverCapabilities && serverCapabilities.semanticTokensProvider
+    ? serverCapabilities.semanticTokensProvider.legend
+    : null;
+  const lspTypes = (legend && legend.tokenTypes) || [];
+  const lspMods = (legend && legend.tokenModifiers) || [];
+  const out = new Uint32Array(lspData.length);
+  for (let i = 0; i + 4 < lspData.length; i += 5) {
+    out[i] = lspData[i];
+    out[i + 1] = lspData[i + 1];
+    out[i + 2] = lspData[i + 2];
+    const lspType = lspTypes[lspData[i + 3]];
+    const monoType = SEMANTIC_TYPE_INDEX[LSP_SEMANTIC_TYPE[lspType]];
+    out[i + 3] = monoType !== undefined ? monoType : 0;
+    let monoMods = 0;
+    const lspBits = lspData[i + 4];
+    for (let m = 0; lspBits && m < lspMods.length; m++) {
+      if (lspBits & (1 << m)) {
+        const monoM = SEMANTIC_MOD_INDEX[lspMods[m]];
+        if (monoM !== undefined) monoMods |= 1 << monoM;
+      }
+    }
+    out[i + 4] = monoMods;
+  }
+  return { data: out };
+}
+
+const EMPTY_SEMANTIC_TOKENS = { data: new Uint32Array(0) };
+
+// LSP 连接就绪后强制 Monaco 重新请求当前文档的语义 token。
+// 不能通过 setModel(null)/setModel(m) 刷新：Monaco 对「编辑器自建」的模型
+// 在 detach 时直接 dispose，会导致 setModel(m) 抛出「Model is disposed!」。
+// 改为通过 semanticHighlighting 开关切换触发 onDidChangeConfiguration，
+// 让 Monaco 重新注册模型观察者并重新拉取语义 token。
+function refreshSemanticTokens() {
+  if (!editor) return;
+  editor.updateOptions({ 'semanticHighlighting.enabled': false });
+  editor.updateOptions({ 'semanticHighlighting.enabled': true });
+}
+
+let semanticHighlightingRegistered = false;
+
+function registerSemanticHighlighting() {
+  if (semanticHighlightingRegistered) return;
+  semanticHighlightingRegistered = true;
+  installSemanticTheme();
+
+  monaco.languages.registerDocumentSemanticTokensProvider(
+    ['cpp', 'c', 'objective-c'],
+    {
+      getLegend() {
+        return { tokenTypes: SEMANTIC_TOKEN_TYPES, tokenModifiers: SEMANTIC_TOKEN_MODIFIERS };
+      },
+      async provideDocumentSemanticTokens(model, lastResultId, token) {
+        const doc = currentTextDoc();
+        if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) {
+          return EMPTY_SEMANTIC_TOKENS;
+        }
+        if (!serverCapabilities || !serverCapabilities.semanticTokensProvider) {
+          return EMPTY_SEMANTIC_TOKENS;
+        }
+        // 切换标签页后模型可能尚未对 clangd 打开；确保 didOpen 已发送
+        if (lsp.lastDocUri !== doc.uri) syncActiveDoc();
+        // 把挂起的 didChange 立即同步，保证语义 token 基于最新内容
+        syncNow();
+        try {
+          const result = await lsp.connection.sendRequest(
+            proto.SemanticTokensRequest.type,
+            { textDocument: { uri: doc.uri } },
+            token
+          );
+          if (token.isCancellationRequested) return EMPTY_SEMANTIC_TOKENS;
+          return convertSemanticTokens(result && result.data);
+        } catch (err) {
+          return EMPTY_SEMANTIC_TOKENS;
+        }
+      },
+      releaseDocumentSemanticTokens() {},
+    }
+  );
+}
+
 async function startEditor() {
   window.__cppeditor.stage = 'monaco-loaded';
 
@@ -1687,6 +1855,8 @@ async function startEditor() {
     snippetSuggestions: 'inline',
     hover: { enabled: true },
     fixedOverflowWidgets: true,
+    // 启用语义高亮（默认由主题决定，Monaco 内置主题默认关闭）
+    'semanticHighlighting.enabled': true,
   });
 
   editor.onDidChangeModelContent(() => {
@@ -1704,7 +1874,7 @@ async function startEditor() {
   updateCursor({ lineNumber: 1, column: 1 });
 
   // LSP 驱动的代码补全
-  monaco.languages.registerCompletionItemProvider('cpp', {
+  monaco.languages.registerCompletionItemProvider(['cpp', 'c'], {
     triggerCharacters: ['.', '>', ':', '<', '"', '/', '*', '#', ' '],
     provideCompletionItems(model, position, context) {
       return provideCompletion(model, position, context);
@@ -1712,7 +1882,7 @@ async function startEditor() {
   });
 
   // LSP 驱动的悬停提示
-  monaco.languages.registerHoverProvider('cpp', {
+  monaco.languages.registerHoverProvider(['cpp', 'c'], {
     provideHover(model, position) {
       return provideHover(model, position);
     },

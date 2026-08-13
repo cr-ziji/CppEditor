@@ -4,3 +4,4 @@ resources/clangd
 resources/mingw
 CppProject
 dist
+build/path-backup.txt
