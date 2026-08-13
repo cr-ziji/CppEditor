@@ -1017,7 +1017,11 @@ function getFileType(node) {
     'out': 'txt',
     'ans': 'txt'
   }
-  return typeMap[ext] || 'unknown';
+  if (typeMap[ext]) return typeMap[ext];
+  // 无扩展名的文件：GCC 工具链内的 C++ 标准库头文件（如 iostream、vector）
+  // 无扩展名，视为 h（头文件）图标；其余保持 unknown
+  if (!ext && isGccFile(node.path)) return 'h';
+  return 'unknown';
 }
 
 function getFileIcon(ext) {
@@ -1030,6 +1034,17 @@ function getFileIcon(ext) {
     'unknown': 'editor://app/resources/icons/unknown.svg'
   };
   return iconMap[ext] || 'editor://app/resources/icons/unkonwn.svg';
+}
+
+// 标签页图标：先按扩展名，无扩展名/未知类型时回退到 model 的语言
+function tabIconType(t) {
+  const byName = getFileType({ name: t.name, type: 'file', path: t.path });
+  if (byName !== 'unknown') return byName;
+  const lang = t.model ? t.model.getLanguageId() : null;
+  if (lang === 'cpp' || lang === 'objective-c') return 'cpp';
+  if (lang === 'c') return 'c';
+  if (lang === 'plaintext' || lang === 'markdown') return 'txt';
+  return 'unknown';
 }
 
 function expandFolder(node){
@@ -1427,9 +1442,30 @@ function pathJoin(dir, name) {
   return (dir || '').replace(/\\/g, '/').replace(/\/+$/, '') + '/' + name;
 }
 
-function languageForPath(p) {
+// GCC 工具链（mingw 资源目录下 lib\gcc\...）内的文件。
+// C++ 标准库头文件（iostream、vector 等）无扩展名，仅对这类文件做内容嗅探/图标推断。
+function isGccFile(p) {
+  return /[\\/]lib[\\/]gcc[\\/]/i.test(p || '');
+}
+
+function detectCppContent(p, content) {
+  if (!content) return /[\\/]include[\\/]c\+\+[\\/]/i.test(p || '');
+  const head = String(content).slice(0, 2000);
+  // emacs 模式行，如 "// Standard iostream objects -*- C++ -*-"
+  if (/-\*- *(c\+\+|c) *-\*-/i.test(head)) return true;
+  if (/#\s*include\s+[<"][^\s>"]+[>"]/.test(head)) return true;
+  if (/#\s*(pragma\s+once|ifndef|ifdef|define|undef)\b/.test(head)) return true;
+  if (/\b(namespace|template|using\s+namespace|std::)\b/.test(head)) return true;
+  return false;
+}
+
+function languageForPath(p, content) {
   const ext = '.' + getFileExtension(p).toLowerCase();
-  return LANG_BY_EXT[ext] || 'plaintext';
+  const lang = LANG_BY_EXT[ext];
+  if (lang) return lang;
+  // 无扩展名/未知扩展名：仅对 GCC 工具链内的文件按内容嗅探为 C++
+  if (isGccFile(p) && detectCppContent(p, content)) return 'cpp';
+  return 'plaintext';
 }
 
 function activeTab() {
@@ -1521,7 +1557,7 @@ async function openFileTab(path, opts) {
     tab.kind = 'text';
     tab.model = monaco.editor.createModel(
       file.content,
-      languageForPath(path),
+      languageForPath(path, file.content),
       monaco.Uri.file(path)
     );
     tab.savedContent = file.content;
@@ -1535,7 +1571,12 @@ async function openFileTab(path, opts) {
 // 状态栏不会上移；不能 display:none，否则底部状态栏会被顶上去）
 function showEmptyState() {
   const econt = document.getElementById('editor');
-  if (econt) econt.style.visibility = 'hidden';
+  if (econt) {
+    // 非文本标签页会把 #editor 设成 display:none，这里必须还原，
+    // 否则该区域塌陷、底部状态栏会顶上去
+    econt.style.display = '';
+    econt.style.visibility = 'hidden';
+  }
   const host = document.getElementById('fileview');
   if (host) {
     host.style.display = 'none';
@@ -1620,10 +1661,15 @@ async function reloadTabFromDisk(tab) {
     if (!tab.model) {
       tab.model = monaco.editor.createModel(
         file.content,
-        languageForPath(tab.path),
+        languageForPath(tab.path, file.content),
         monaco.Uri.file(tab.path)
       );
     } else if (tab.model.getValue() !== file.content) {
+      // 文件在磁盘上更新：若此前按纯文本创建（无扩展名），可重新嗅探升级语言
+      const lang = languageForPath(tab.path, file.content);
+      if (lang !== 'plaintext' && tab.model.getLanguageId() === 'plaintext') {
+        monaco.editor.setModelLanguage(tab.model, lang);
+      }
       tab.model.setValue(file.content);
     }
     tab.savedContent = file.content;
@@ -1666,7 +1712,7 @@ function renderTabs() {
     const el = document.createElement('div');
     el.className = 'tab' + (t.id === activeTabId ? ' active' : '');
     const img = document.createElement('img');
-    img.src = getFileIcon(getFileType({ name: t.name, type: 'file' }));
+    img.src = getFileIcon(tabIconType(t));
     const span = document.createElement('span');
     span.textContent = t.name;
     span.title = t.path || t.name;
