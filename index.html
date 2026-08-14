@@ -20,6 +20,7 @@
       <img src="editor://app/icon.svg" alt="CppEditor" id="app-icon">
       <h1 id="app-title">CppEditor</h1>
       <button id="run-btn"><img src="editor://app/resources/header/run.svg" data-dark-src="editor://app/resources/header/run.svg" data-light-src="editor://app/resources/header/light/run.svg" alt="运行"></button>
+      <button id="find-btn" title="查找 / 替换 (Ctrl+F / Ctrl+R)"><img src="editor://app/resources/header/find.svg" data-dark-src="editor://app/resources/header/find.svg" data-light-src="editor://app/resources/header/light/find.svg" alt="查找"></button>
       <button id="setting-btn"><img src="editor://app/resources/header/setting.svg" data-dark-src="editor://app/resources/header/setting.svg" data-light-src="editor://app/resources/header/light/setting.svg" alt="设置"></button>
       <button id="minimize-btn"><img src="editor://app/resources/header/minimize.svg" data-dark-src="editor://app/resources/header/minimize.svg" data-light-src="editor://app/resources/header/light/minimize.svg" alt="最小化"></button>
       <button id="maximize-btn"><img src="editor://app/resources/header/maximize.svg" data-dark-src="editor://app/resources/header/maximize.svg" data-light-src="editor://app/resources/header/light/maximize.svg" alt="最大化"></button>
@@ -46,6 +47,27 @@
 
         <!-- 占满屏幕的编辑器区域 -->
         <div id="editor"></div>
+
+        <!-- 文本查找 / 替换栏 -->
+        <div id="findbar" style="display:none">
+          <div class="find-row">
+            <input id="find-input" type="text" spellcheck="false" placeholder="查找" />
+            <span id="find-count"></span>
+            <button id="find-prev" class="find-btn" title="上一个 (Shift+Enter)">&#8593;</button>
+            <button id="find-next" class="find-btn" title="下一个 (Enter)">&#8595;</button>
+            <button id="find-close" class="find-btn" title="关闭 (Esc)">&#10005;</button>
+          </div>
+          <div class="find-row" id="replace-row" style="display:none">
+            <input id="replace-input" type="text" spellcheck="false" placeholder="替换为" />
+            <button id="replace-one" class="find-btn" title="替换当前">替换</button>
+            <button id="replace-all" class="find-btn" title="全部替换">全部替换</button>
+          </div>
+          <div class="find-options">
+            <label><input type="checkbox" id="find-case" />区分大小写</label>
+            <label><input type="checkbox" id="find-word" />全词匹配</label>
+            <label><input type="checkbox" id="find-regex" />正则</label>
+          </div>
+        </div>
 
         <!-- 底部状态栏：LSP 状态 + 错误/警告数量 -->
         <div id="statusbar">
@@ -82,6 +104,18 @@
 
     <!-- 文件树右键菜单（内容由渲染进程动态构建） -->
     <div id="tree-menu" style="display:none"></div>
+
+    <!-- 编辑器右键菜单（复制 / 粘贴 / 剪切 / 全选 / 查找 / 替换 / 运行 / 到定义 / 到引用） -->
+    <div id="editor-menu" style="display:none"></div>
+
+    <!-- 编辑器「到引用」结果列表面板 -->
+    <div id="references-panel" style="display:none">
+      <div class="ref-head">
+        <span id="ref-title">引用</span>
+        <button id="ref-close" class="ref-close" title="关闭 (Esc)">×</button>
+      </div>
+      <div id="ref-list" class="ref-list"></div>
+    </div>
 
     <!-- 文件树新建 / 重命名输入弹层 -->
     <div id="tree-input" style="display:none">

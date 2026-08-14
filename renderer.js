@@ -904,8 +904,35 @@ async function provideHover(model, position) {
   }
 }
 
-// 跳转到指定位置的符号定义（Ctrl+左键）。
+// 打开并定位到某个 LSP 位置（兼容 Location 与 LocationLink）。
 // 同一文件内直接定位；其他文件（无论是否已打开）通过标签页打开并定位。
+async function revealLocation(targetUri, range) {
+  const targetPath = pathFromLspUri(targetUri);
+  if (!targetPath) return false;
+  const reveal = () => {
+    if (!range) return;
+    if (!editor || !editor.getModel()) return;
+    const r = toMonacoRange(range);
+    editor.setPosition({ lineNumber: r.startLineNumber, column: r.startColumn });
+    editor.revealRangeInCenter(r, monaco.editor.ScrollType.Smooth);
+  };
+  const t = activeTab();
+  if (t && t.path && pathEquals(targetPath, t.path)) {
+    reveal();
+    return true;
+  }
+  const existing = findTabByPath(targetPath);
+  if (existing && existing.kind === 'text' && existing.model) {
+    activateTab(existing);
+    reveal();
+    return true;
+  }
+  await openFileTab(targetPath);
+  reveal();
+  return true;
+}
+
+// 跳转到指定位置的符号定义（右键菜单「到定义」）。
 async function jumpToDefinition(position) {
   const doc = currentTextDoc();
   if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) return;
@@ -927,31 +954,600 @@ async function jumpToDefinition(position) {
   const targetUri = loc.targetUri || loc.uri;
   const range = loc.targetRange || loc.range || loc.targetSelectionRange;
   if (!targetUri) return;
+  await revealLocation(targetUri, range);
+}
+
+// 判断某个光标位置是否落在 LSP range 内（用于 Ctrl+左键 判定「是否点到了定义」）
+function pointInLspRange(position, range) {
+  if (!range) return false;
+  const p = { line: position.lineNumber - 1, character: position.column - 1 };
+  const s = range.start;
+  const en = range.end;
+  if (p.line < s.line || p.line > en.line) return false;
+  if (p.line === s.line && p.character < s.character) return false;
+  if (p.line === en.line && p.character > en.character) return false;
+  return true;
+}
+
+// Ctrl + 左键：若点击位置不是定义则跳转到定义，否则列出该符号的所有引用
+// anchor：点击位置的视口坐标 { x, y }，供引用面板靠近点击处悬浮
+async function ctrlClickAt(position, anchor) {
+  const doc = currentTextDoc();
+  if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) return;
+  syncNow();
+  let result;
+  try {
+    result = await lsp.connection.sendRequest(proto.DefinitionRequest.type, {
+      textDocument: { uri: doc.uri },
+      position: toLspPosition(position),
+    });
+  } catch (err) {
+    console.warn('[LSP] 定义请求失败:', err);
+    return;
+  }
+  const items = Array.isArray(result) ? result : result ? [result] : [];
+  const loc = items[0];
+  if (!loc) return;
+  const targetUri = loc.targetUri || loc.uri;
+  const range = loc.targetRange || loc.range || loc.targetSelectionRange;
+  if (!targetUri || !range) return;
   const targetPath = pathFromLspUri(targetUri);
   if (!targetPath) return;
 
+  const cur = activeTab();
+  const isOnDefinition =
+    !!cur && !!cur.path && pathEquals(targetPath, cur.path) && pointInLspRange(position, range);
+  if (isOnDefinition) {
+    // 点击位置就是定义本身：列出所有引用
+    findReferences(position, anchor);
+  } else {
+    await revealLocation(targetUri, range);
+  }
+}
+
+// 查找指定位置符号的所有引用（右键菜单「到引用」/ Ctrl+左键点在定义上）。
+// 通过 textDocument/references 获取所有引用位置，展示为可点击的列表面板。
+// anchor：触发位置的视口坐标 { x, y }，用于面板靠近点击处悬浮（缺省时屏幕右下角）。
+async function findReferences(position, anchor) {
+  const doc = currentTextDoc();
+  if (!isReady() || !doc || !doc.uri || !isCppLang(doc.languageId)) return;
+  syncNow();
+  let result;
+  try {
+    result = await lsp.connection.sendRequest(proto.ReferencesRequest.type, {
+      textDocument: { uri: doc.uri },
+      position: toLspPosition(position),
+      context: { includeDeclaration: true },
+    });
+  } catch (err) {
+    console.warn('[LSP] 引用查找请求失败:', err);
+    return;
+  }
+  const locs = Array.isArray(result) ? result : result ? [result] : [];
+  const entries = [];
+  for (const loc of locs) {
+    if (!loc.uri || !loc.range) continue;
+    const p = pathFromLspUri(loc.uri);
+    if (!p) continue;
+    const lineText = await refLineText(p, loc.range.start.line);
+    entries.push({
+      path: p,
+      line: loc.range.start.line + 1,
+      col: loc.range.start.character + 1,
+      range: loc.range,
+      lineText,
+    });
+  }
+  showReferencesPanel(entries, anchor);
+}
+
+// 取某文件某行的文本用于引用列表展示：优先用已打开标签页的 model，否则经 IPC 读磁盘
+async function refLineText(filePath, lineIdx) {
+  const t = findTabByPath(filePath);
+  if (t && t.kind === 'text' && t.model) {
+    const lines = t.model.getLinesContent();
+    return (lines[lineIdx] || '').trim();
+  }
+  try {
+    const f = await window.editorAPI.readFile(filePath);
+    if (f && f.ok && typeof f.content === 'string') {
+      return (f.content.split('\n')[lineIdx] || '').trim();
+    }
+  } catch { /* ignore */ }
+  return '';
+}
+
+// 显示引用结果面板（悬浮在视口内，靠近触发位置 anchor）
+function showReferencesPanel(entries, anchor) {
+  const panel = document.getElementById('references-panel');
+  if (!panel) return;
+  const list = document.getElementById('ref-list');
+  const title = document.getElementById('ref-title');
+  list.innerHTML = '';
+  if (title) title.textContent = '引用 (' + entries.length + ')';
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ref-empty';
+    empty.textContent = '未找到引用';
+    list.appendChild(empty);
+  } else {
+    for (const en of entries) {
+      const row = document.createElement('div');
+      row.className = 'ref-item';
+      const loc = document.createElement('div');
+      loc.className = 'ref-loc';
+      loc.textContent = basename(en.path) + ':' + en.line + ':' + en.col;
+      const txt = document.createElement('div');
+      txt.className = 'ref-text';
+      txt.textContent = en.lineText || '';
+      row.appendChild(loc);
+      row.appendChild(txt);
+      row.addEventListener('click', () => {
+        hideReferencesPanel();
+        jumpToReference(en);
+      });
+      list.appendChild(row);
+    }
+  }
+  panel.style.display = 'block';
+  const mw = panel.offsetWidth;
+  const mh = panel.offsetHeight;
+  let lx = anchor ? anchor.x : window.innerWidth - mw - 16;
+  let ly = anchor ? anchor.y + 8 : window.innerHeight - mh - 40;
+  if (lx + mw > window.innerWidth - 8) lx = Math.max(8, window.innerWidth - mw - 8);
+  if (ly + mh > window.innerHeight - 8) ly = Math.max(8, window.innerHeight - mh - 8);
+  panel.style.left = lx + 'px';
+  panel.style.top = ly + 'px';
+}
+
+function hideReferencesPanel() {
+  const panel = document.getElementById('references-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+// 跳转到某个引用位置（面板点击）
+async function jumpToReference(entry) {
   const reveal = () => {
-    if (!range) return;
     if (!editor || !editor.getModel()) return;
-    const r = toMonacoRange(range);
+    const r = toMonacoRange(entry.range);
     editor.setPosition({ lineNumber: r.startLineNumber, column: r.startColumn });
     editor.revealRangeInCenter(r, monaco.editor.ScrollType.Smooth);
+    editor.focus();
   };
-
   const t = activeTab();
-  if (t && t.path && pathEquals(targetPath, t.path)) {
-    // 定义就在当前文件：直接定位
+  if (t && t.path && pathEquals(entry.path, t.path)) {
     reveal();
     return;
   }
-  const existing = findTabByPath(targetPath);
+  const existing = findTabByPath(entry.path);
   if (existing && existing.kind === 'text' && existing.model) {
     activateTab(existing);
     reveal();
     return;
   }
-  await openFileTab(targetPath);
+  await openFileTab(entry.path);
   reveal();
+}
+
+// ---------------------------------------------------------------------------
+// 8. 编辑器右键菜单：复制 / 粘贴 / 剪切 / 全选 / 查找 / 替换 / 运行 / 到定义 / 到引用
+//    通过捕获阶段拦截 contextmenu，阻止 Monaco 默认英文菜单
+// ---------------------------------------------------------------------------
+let editorMenuPos = null; // 右键时的视口坐标（x/y）与光标位置（position），供 到定义 / 到引用 / 引用面板定位 使用
+
+function showEditorMenu(e) {
+  const menu = document.getElementById('editor-menu');
+  if (!menu) return;
+  // 记录右键位置：优先从 Monaco 鼠标目标解析，失败则取当前光标位置
+  editorMenuPos = { x: e.clientX, y: e.clientY, position: null };
+  try {
+    const target = editor.getTargetAtClientPoint(e.clientX, e.clientY);
+    if (target && target.type === monaco.editor.MouseTargetType.CONTENT_TEXT && target.position) {
+      editorMenuPos.position = target.position;
+    }
+  } catch {
+    /* ignore */
+  }
+  if (!editorMenuPos.position) {
+    const cur = editor.getPosition();
+    if (cur) editorMenuPos.position = { lineNumber: cur.lineNumber, column: cur.column };
+  }
+
+  const t = activeTab();
+  const isText = !!t && t.kind === 'text' && !!t.model;
+  const sel = isText && editor.getSelection ? editor.getSelection() : null;
+  const hasSel = !!sel && !sel.isEmpty();
+  const runnable = isText && t.path && ('.c' === '.' + getFileExtension(t.path).toLowerCase() || '.cpp' === '.' + getFileExtension(t.path).toLowerCase());
+  const lspReady = isReady() && isText && isCppLang(t.model.getLanguageId());
+
+  menu.innerHTML = '';
+  const item = (label, fn, disabled) => {
+    const d = document.createElement('div');
+    d.className = 'tree-menu-item' + (disabled ? ' disabled' : '');
+    d.textContent = label;
+    if (!disabled) d.addEventListener('click', (ev) => { ev.stopPropagation(); hideEditorMenu(); fn(); });
+    return d;
+  };
+  const sep = () => {
+    const d = document.createElement('div');
+    d.className = 'tree-menu-sep';
+    return d;
+  };
+
+  const copySel = () => {
+    const m = editor.getModel();
+    const sel = editor.getSelection();
+    if (m && sel && !sel.isEmpty()) window.editorAPI.writeClipboardText(m.getValueInRange(sel));
+  };
+  const cutSel = () => {
+    const m = editor.getModel();
+    const sel = editor.getSelection();
+    if (m && sel && !sel.isEmpty()) {
+      window.editorAPI.writeClipboardText(m.getValueInRange(sel));
+      m.pushEditOperations([], [{ range: sel, text: '' }], () => null);
+    }
+  };
+  const pasteText = async () => {
+    const m = editor.getModel();
+    if (!m) return;
+    const text = await window.editorAPI.readClipboardText();
+    if (text == null) return;
+    m.pushEditOperations([], [{ range: editor.getSelection(), text }], () => null);
+  };
+
+  menu.appendChild(item('复制', copySel, !hasSel));
+  menu.appendChild(item('粘贴', pasteText, !isText));
+  menu.appendChild(item('剪切', cutSel, !hasSel));
+  menu.appendChild(item('全选', () => { editor.trigger('context-menu', 'editor.action.selectAll'); }, !isText));
+  menu.appendChild(sep());
+  menu.appendChild(item('查找', () => openFindBar(false), !isText));
+  menu.appendChild(item('替换', () => openFindBar(true), !isText));
+  menu.appendChild(sep());
+  menu.appendChild(item('运行', runActiveFile, !runnable));
+  menu.appendChild(item('到定义', () => { if (editorMenuPos && editorMenuPos.position) jumpToDefinition(editorMenuPos.position); }, !lspReady));
+  menu.appendChild(item('到引用', () => { if (editorMenuPos && editorMenuPos.position) findReferences(editorMenuPos.position, editorMenuPos); }, !lspReady));
+
+  menu.style.display = 'block';
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  let lx = e.clientX;
+  let ly = e.clientY;
+  if (lx + mw > window.innerWidth - 8) lx = Math.max(8, window.innerWidth - mw - 8);
+  if (ly + mh > window.innerHeight - 8) ly = Math.max(8, window.innerHeight - mh - 8);
+  menu.style.left = lx + 'px';
+  menu.style.top = ly + 'px';
+}
+
+function hideEditorMenu() {
+  const menu = document.getElementById('editor-menu');
+  if (menu) menu.style.display = 'none';
+}
+
+// ---------------------------------------------------------------------------
+// 9. 文本查找 / 替换
+// ---------------------------------------------------------------------------
+let findDeco = null;       // 当前匹配高亮装饰
+let findCur = 0;           // 当前选中的匹配序号（1 起）
+
+function findIsOpen() {
+  const bar = document.getElementById('findbar');
+  return bar && bar.style.display !== 'none';
+}
+
+function findOptions() {
+  return {
+    caseSensitive: document.getElementById('find-case').checked,
+    wholeWord: document.getElementById('find-word').checked,
+    regex: document.getElementById('find-regex').checked,
+  };
+}
+
+// 根据选项把查询串转成 Monaco 可用的搜索串（全词 → \b(...)\b）
+function findSearchString(raw) {
+  const o = findOptions();
+  if (!o.wholeWord) return raw;
+  if (o.regex) return '\\b(?:' + raw + ')\\b';
+  return '\\b' + raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b';
+}
+
+function findMatchesList() {
+  const model = editor && editor.getModel();
+  const input = document.getElementById('find-input');
+  if (!model || !input) return [];
+  const raw = input.value;
+  if (!raw) return [];
+  const o = findOptions();
+  try {
+    return model.findMatches(
+      findSearchString(raw), true, o.wholeWord || o.regex, o.caseSensitive,
+      null, false, 100000
+    );
+  } catch {
+    return [];
+  }
+}
+
+function clearFindDeco() {
+  if (findDeco) {
+    try { findDeco.clear(); } catch { /* ignore */ }
+    findDeco = null;
+  }
+}
+
+function updateFindStatus(n) {
+  const el = document.getElementById('find-count');
+  if (el) el.textContent = n ? findCur + ' / ' + n : '';
+}
+
+// 重新计算匹配并高亮，光标跟随（forward: true 下一个 / false 上一个 / null 保持）
+function refreshFind(forward) {
+  const model = editor && editor.getModel();
+  clearFindDeco();
+  const matches = findMatchesList();
+  if (!matches.length) {
+    updateFindStatus(0);
+    return;
+  }
+  findDeco = editor.createDecorationsCollection(
+    matches.map((m) => ({
+      range: m.range,
+      options: { inlineClassName: 'find-match' },
+    }))
+  );
+  const curPos = editor.getPosition();
+  let idx = -1;
+  if (forward === null) {
+    // 从光标处找第一个起点 >= 光标的匹配
+    idx = matches.findIndex((m) =>
+      m.range.startLineNumber > curPos.lineNumber ||
+      (m.range.startLineNumber === curPos.lineNumber && m.range.startColumn >= curPos.column)
+    );
+    if (idx === -1) idx = 0;
+  } else {
+    const selStart = editor.getSelection() ? editor.getSelection().getStartPosition() : curPos;
+    if (forward) {
+      idx = matches.findIndex((m) =>
+        m.range.startLineNumber > selStart.lineNumber ||
+        (m.range.startLineNumber === selStart.lineNumber && m.range.startColumn > selStart.column)
+      );
+      if (idx === -1) idx = 0;
+    } else {
+      idx = matches.length - 1;
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const m = matches[i];
+        if (m.range.startLineNumber < selStart.lineNumber ||
+            (m.range.startLineNumber === selStart.lineNumber && m.range.startColumn < selStart.column)) {
+          idx = i;
+          break;
+        }
+      }
+    }
+  }
+  goToMatch(matches, idx);
+}
+
+function goToMatch(matches, idx) {
+  if (!matches || !matches.length) return;
+  findCur = idx + 1;
+  const m = matches[idx];
+  editor.setSelection(m.range);
+  editor.revealRangeInCenterIfOutsideViewport(m.range, monaco.editor.ScrollType.Smooth);
+  editor.focus();
+  updateFindStatus(matches.length);
+}
+
+function openFindBar(showReplace) {
+  const bar = document.getElementById('findbar');
+  if (!bar) return;
+  // 首次打开时以当前选中文字 / 光标处单词预填
+  const input = document.getElementById('find-input');
+  if (!input.value) {
+    const seed = (() => {
+      const model = editor && editor.getModel();
+      const sel = editor.getSelection && editor.getSelection();
+      if (model && sel && !sel.isEmpty()) {
+        return model.getValueInRange(sel);
+      }
+      const w = editor.getModel() && editor.getModel().getWordAtPosition(editor.getPosition());
+      if (w) return w.word;
+      return '';
+    })();
+    input.value = seed || '';
+  }
+  document.getElementById('replace-row').style.display = showReplace ? 'flex' : 'none';
+  bar.style.display = 'block';
+  input.focus();
+  input.select();
+  refreshFind(null);
+}
+
+function closeFindBar() {
+  const bar = document.getElementById('findbar');
+  if (bar) bar.style.display = 'none';
+  clearFindDeco();
+  updateFindStatus(0);
+  if (editor) editor.focus();
+}
+
+function findNext() {
+  const matches = findMatchesList();
+  if (!matches.length) { updateFindStatus(0); return; }
+  const curPos = editor.getPosition();
+  let idx = matches.findIndex((m) =>
+    m.range.startLineNumber > curPos.lineNumber ||
+    (m.range.startLineNumber === curPos.lineNumber && m.range.startColumn > curPos.column)
+  );
+  if (idx === -1) idx = 0;
+  goToMatch(matches, idx);
+}
+
+function findPrev() {
+  const matches = findMatchesList();
+  if (!matches.length) { updateFindStatus(0); return; }
+  const curPos = editor.getPosition();
+  let idx = matches.length - 1;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i];
+    if (m.range.startLineNumber < curPos.lineNumber ||
+        (m.range.startLineNumber === curPos.lineNumber && m.range.startColumn < curPos.column)) {
+      idx = i;
+      break;
+    }
+  }
+  goToMatch(matches, idx);
+}
+
+// 替换当前匹配（光标所在的匹配）
+function replaceCurrent() {
+  const model = editor && editor.getModel();
+  const replaceInput = document.getElementById('replace-input');
+  if (!model || !replaceInput) return;
+  const sel = editor.getSelection();
+  if (!sel || sel.isEmpty()) { findNext(); return; }
+  const matches = findMatchesList();
+  const cur = matches.find((m) => sel.getStartPosition().equals(m.range.getStartPosition()));
+  if (!cur) { findNext(); return; }
+  const replacement = replaceInput.value;
+  model.pushEditOperations([], [{ range: cur.range, text: replacement }], () => null);
+  // 光标移动到替换后文本的末尾
+  const newPos = {
+    lineNumber: cur.range.startLineNumber,
+    column: cur.range.startColumn + replacement.length,
+  };
+  editor.setPosition(newPos);
+  refreshFind(true);
+}
+
+// 全部替换
+function replaceAll() {
+  const model = editor && editor.getModel();
+  const replaceInput = document.getElementById('replace-input');
+  if (!model || !replaceInput) return;
+  const matches = findMatchesList();
+  if (!matches.length) { updateFindStatus(0); return; }
+  const replacement = replaceInput.value;
+  const edits = matches.map((m) => ({ range: m.range, text: replacement }));
+  model.pushEditOperations([], edits, () => null);
+  refreshFind(null);
+}
+
+function initFindBar() {
+  const input = document.getElementById('find-input');
+  const replaceInput = document.getElementById('replace-input');
+  if (!input) return;
+  const findOpts = ['find-case', 'find-word', 'find-regex'];
+
+  input.addEventListener('input', () => refreshFind(null));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) findPrev();
+      else findNext();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFindBar();
+    }
+  });
+  if (replaceInput) {
+    replaceInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); replaceCurrent(); }
+      else if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); replaceAll(); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeFindBar(); }
+    });
+  }
+  findOpts.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => refreshFind(null));
+  });
+
+  const on = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', fn);
+  };
+  on('find-next', findNext);
+  on('find-prev', findPrev);
+  on('find-close', closeFindBar);
+  on('replace-one', replaceCurrent);
+  on('replace-all', replaceAll);
+  on('ref-close', hideReferencesPanel);
+
+  // 编辑器容器捕获阶段拦截按键：Ctrl+F / Ctrl+R / F3 / Shift+F3 / Esc
+  // 阻止 Monaco 内置英文查找面板，改走自定义查找栏
+  const editorHost = document.getElementById('editor');
+  if (editorHost) {
+    editorHost.addEventListener('keydown', (e) => {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        openFindBar(false);
+        return;
+      }
+      if (ctrl && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        openFindBar(true);
+        return;
+      }
+      if (e.key === 'F3' && !e.shiftKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (findIsOpen()) findNext(); else openFindBar(false);
+        return;
+      }
+      if (e.key === 'F3' && e.shiftKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (findIsOpen()) findPrev(); else openFindBar(false);
+        return;
+      }
+      if (e.key === 'Escape' && findIsOpen()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        closeFindBar();
+      }
+      if (e.key === 'Escape' && document.getElementById('references-panel').style.display !== 'none') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        hideReferencesPanel();
+      }
+    }, true);
+
+    // 捕获阶段拦截右键：禁用 Monaco 默认英文菜单，显示自定义菜单
+    editorHost.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      showEditorMenu(e);
+    }, true);
+  }
+
+  // 点击其他区域时收起右键菜单 / 引用面板；查找栏保持打开（与 VS Code 一致，Esc/按钮关闭）
+  document.addEventListener('mousedown', (e) => {
+    if (e.target && e.target.closest && e.target.closest('#editor-menu')) return;
+    hideEditorMenu();
+    if (!(e.target && e.target.closest && e.target.closest('#references-panel'))) {
+      hideReferencesPanel();
+    }
+  });
+  editor.onDidChangeModel(() => { if (findIsOpen()) refreshFind(null); });
+  // 编辑内容变化时只刷新匹配高亮与计数，不移动光标
+  editor.onDidChangeModelContent(() => {
+    if (findIsOpen()) refreshFindHighlights();
+  });
+}
+
+// 只重算匹配高亮与计数（不移动光标），供内容变化时调用
+function refreshFindHighlights() {
+  clearFindDeco();
+  const matches = findMatchesList();
+  if (!matches.length) { updateFindStatus(0); return; }
+  findDeco = editor.createDecorationsCollection(
+    matches.map((m) => ({
+      range: m.range,
+      options: { inlineClassName: 'find-match' },
+    }))
+  );
+  updateFindStatus(matches.length);
 }
 
 function buildFileTree(paths, basePath = '') {
@@ -2614,13 +3210,21 @@ async function startEditor() {
   editor.onDidChangeCursorPosition((e) => updateCursor(e.position));
   updateCursor({ lineNumber: 1, column: 1 });
 
-  // Ctrl + 左键：跳转到符号定义
+  // Ctrl + 左键：非定义 → 跳转到定义；已是定义 → 列出所有引用
   editor.onMouseDown((e) => {
     if (!(e.event.ctrlKey || e.event.metaKey)) return;
     if (!e.event.leftButton) return;
     const t = e.target;
     if (!t || t.type !== monaco.editor.MouseTargetType.CONTENT_TEXT || !t.position) return;
-    jumpToDefinition(t.position);
+    // Monaco 的 e.event 是内部事件对象（无 clientX/Y），需从 browserEvent 或 posx/posy 取视口坐标
+    const evt = e.event;
+    const mx = evt.clientX !== undefined ? evt.clientX
+      : evt.browserEvent && evt.browserEvent.clientX !== undefined ? evt.browserEvent.clientX
+      : evt.posx;
+    const my = evt.clientY !== undefined ? evt.clientY
+      : evt.browserEvent && evt.browserEvent.clientY !== undefined ? evt.browserEvent.clientY
+      : evt.posy;
+    ctrlClickAt(t.position, { x: mx, y: my });
   });
 
   // LSP 驱动的代码补全
@@ -2648,6 +3252,8 @@ async function startEditor() {
       bootstrap();
     },
   });
+
+  initFindBar();
 
   setDiagCounts(0, 0);
   setLspState('connecting', '正在连接 clangd...');
@@ -2695,46 +3301,12 @@ function initHeader(){
     document.getElementById('unmaximize-btn').style.display = 'none';
   })
 
-  document.getElementById('run-btn').addEventListener('click', async () => {
-    const t = activeTab();
-    if (!t || t.kind !== 'text' || !t.model) {
-      showSaveStatus('没有可运行的源文件', true);
-      return;
-    }
-    // 未绑定磁盘路径的文档先保存（取消保存则中止）
-    if (!t.path) {
-      await saveFile();
-      if (!t.path) return;
-    }
-    const ext = '.' + getFileExtension(t.path).toLowerCase();
-    if (ext !== '.c' && ext !== '.cpp') {
-      showSaveStatus('仅支持运行 .c / .cpp 文件', true);
-      return;
-    }
-    // 有未保存修改时先落盘，保证编译的是最新内容
-    if (t.dirty) await saveFile();
-
-    showSaveStatus('正在编译 ' + t.name + ' ...');
-    let result;
-    try {
-      result = await window.editorAPI.runFile(t.path);
-    } catch (err) {
-      showSaveStatus('运行失败: ' + err.message, true);
-      return;
-    }
-    if (result && result.ok) {
-      // 有警告：展示在底部面板（不影响运行）；无警告则收起旧面板，
-      // 避免上次编译的警告/错误残留
-      if (result.output) showBuildOutput('warning', result.output);
-      else hideBuildOutput();
-      showSaveStatus('已启动: ' + basename(result.exePath || t.path));
-    } else {
-      const msg = (result && result.message) || '编译失败';
-      if (result && result.output) showBuildOutput('error', result.output);
-      console.error(msg);
-      showSaveStatus('编译失败', true);
-    }
+  document.getElementById('find-btn').addEventListener('click', () => {
+    if (findIsOpen()) closeFindBar();
+    else openFindBar(true);
   })
+
+  document.getElementById('run-btn').addEventListener('click', runActiveFile)
 
   document.getElementById('setting-btn').addEventListener('click', () => {
     window.editorAPI.openSettingWindow();
@@ -2743,6 +3315,48 @@ function initHeader(){
   const buildCloseBtn = document.getElementById('build-close');
   if (buildCloseBtn) {
     buildCloseBtn.addEventListener('click', hideBuildOutput);
+  }
+}
+
+// 编译并运行当前激活的源文件（运行按钮与编辑器右键菜单「运行」共用）
+async function runActiveFile() {
+  const t = activeTab();
+  if (!t || t.kind !== 'text' || !t.model) {
+    showSaveStatus('没有可运行的源文件', true);
+    return;
+  }
+  // 未绑定磁盘路径的文档先保存（取消保存则中止）
+  if (!t.path) {
+    await saveFile();
+    if (!t.path) return;
+  }
+  const ext = '.' + getFileExtension(t.path).toLowerCase();
+  if (ext !== '.c' && ext !== '.cpp') {
+    showSaveStatus('仅支持运行 .c / .cpp 文件', true);
+    return;
+  }
+  // 有未保存修改时先落盘，保证编译的是最新内容
+  if (t.dirty) await saveFile();
+
+  showSaveStatus('正在编译 ' + t.name + ' ...');
+  let result;
+  try {
+    result = await window.editorAPI.runFile(t.path);
+  } catch (err) {
+    showSaveStatus('运行失败: ' + err.message, true);
+    return;
+  }
+  if (result && result.ok) {
+    // 有警告：展示在底部面板（不影响运行）；无警告则收起旧面板，
+    // 避免上次编译的警告/错误残留
+    if (result.output) showBuildOutput('warning', result.output);
+    else hideBuildOutput();
+    showSaveStatus('已启动: ' + basename(result.exePath || t.path));
+  } else {
+    const msg = (result && result.message) || '编译失败';
+    if (result && result.output) showBuildOutput('error', result.output);
+    console.error(msg);
+    showSaveStatus('编译失败', true);
   }
 }
 
@@ -2850,6 +3464,11 @@ function init() {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === 's') {
       e.preventDefault();
       saveFile();
+    }
+    // Ctrl+R 打开替换（同时拦截浏览器默认的页面刷新）
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      openFindBar(true);
     }
     // Ctrl+W 关闭当前标签页
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {

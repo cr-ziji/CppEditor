@@ -39,7 +39,7 @@ header #app-title {
     margin-right: auto;
 }
 
-header #run-btn, header #setting-btn{
+header #run-btn, header #setting-btn, header #find-btn{
     -webkit-app-region: no-drag;
     width: 30px;
     height: 30px;
@@ -53,12 +53,20 @@ header #run-btn, header #setting-btn{
     margin-right: 30px;
 }
 
-header #run-btn:hover, header #setting-btn:hover{
+header #find-btn{
+    margin-right: 10px;
+}
+
+header #run-btn:hover, header #setting-btn:hover, header #find-btn:hover{
     background: #3A3B3F;
 }
 
 header #run-btn img{
     width: 20px;
+}
+
+header #find-btn img{
+    width: 18px;
 }
 
 header #setting-btn img{
@@ -533,7 +541,7 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 }
 
 /* 文件树右键菜单 */
-#tree-menu{
+#tree-menu, #editor-menu{
     position: fixed;
     z-index: 1000;
     min-width: 180px;
@@ -545,7 +553,7 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     user-select: none;
 }
 
-#tree-menu .tree-menu-item{
+#tree-menu .tree-menu-item, #editor-menu .tree-menu-item{
     display: flex;
     align-items: center;
     gap: 6px;
@@ -556,34 +564,34 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     position: relative;
 }
 
-#tree-menu .tree-menu-item img{
+#tree-menu .tree-menu-item img, #editor-menu .tree-menu-item img{
     width: 1.1em;
     height: 1.1em;
     flex-shrink: 0;
 }
 
-#tree-menu .tree-menu-item:hover{
+#tree-menu .tree-menu-item:hover, #editor-menu .tree-menu-item:hover{
     background: #094771;
     color: #ffffff;
 }
 
-#tree-menu .tree-menu-item.disabled{
+#tree-menu .tree-menu-item.disabled, #editor-menu .tree-menu-item.disabled{
     color: #6e6e6e;
     cursor: default;
 }
 
-#tree-menu .tree-menu-item.disabled:hover{
+#tree-menu .tree-menu-item.disabled:hover, #editor-menu .tree-menu-item.disabled:hover{
     background: transparent;
     color: #6e6e6e;
 }
 
-#tree-menu .tree-menu-sep{
+#tree-menu .tree-menu-sep, #editor-menu .tree-menu-sep{
     height: 1px;
     background: #3c3c3c;
     margin: 4px 8px;
 }
 
-#tree-menu .tree-menu-item.has-submenu .tree-menu-sub{
+#tree-menu .tree-menu-item.has-submenu .tree-menu-sub, #editor-menu .tree-menu-item.has-submenu .tree-menu-sub{
     display: none;
     position: absolute;
     left: 100%;
@@ -595,9 +603,66 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     padding: 4px 0;
 }
 
-#tree-menu .tree-menu-item.has-submenu:hover .tree-menu-sub{
+#tree-menu .tree-menu-item.has-submenu:hover .tree-menu-sub, #editor-menu .tree-menu-item.has-submenu:hover .tree-menu-sub{
     display: block;
 }
+
+/* 编辑器「到引用」结果列表面板 */
+#references-panel{
+    position: fixed;
+    z-index: 1002;
+    min-width: 320px;
+    max-width: 600px;
+    background: #252526;
+    border: 1px solid #454545;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    font-size: 12px;
+    color: #d4d4d4;
+    user-select: none;
+}
+
+#references-panel .ref-head{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: #333333;
+    border-bottom: 1px solid #454545;
+    font-weight: 600;
+}
+
+#references-panel .ref-close{
+    background: none;
+    border: none;
+    color: #bbbbbb;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+#references-panel .ref-close:hover{ color: #ffffff; }
+
+#references-panel .ref-list{
+    max-height: 48vh;
+    overflow: auto;
+}
+
+#references-panel .ref-item{
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#references-panel .ref-item:hover{ background: #094771; }
+
+#references-panel .ref-loc{ color: #4fc1ff; }
+
+#references-panel .ref-text{ color: #9d9d9d; }
+
+#references-panel .ref-empty{ padding: 8px 10px; color: #9d9d9d; }
 
 /* 文件树新建 / 重命名输入弹层 */
 #tree-input{
@@ -854,6 +919,102 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     background: #555555;
 }
 
+/* 文本查找 / 替换栏：悬浮于编辑器右上角 */
+#findbar{
+    position: absolute;
+    top: 42px;
+    right: 12px;
+    z-index: 300;
+    min-width: 320px;
+    background: #252526;
+    border: 1px solid #454545;
+    box-shadow: 0 2px 10px rgba(0,0,0,.45);
+    padding: 6px;
+    font-size: 12px;
+    color: #cccccc;
+    user-select: none;
+}
+
+#textframe{
+    position: relative;
+}
+
+#findbar .find-row{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 5px;
+}
+
+#findbar .find-row:last-child{
+    margin-bottom: 0;
+}
+
+#findbar input[type="text"]{
+    flex: 1;
+    min-width: 0;
+    background: #1e1e1e;
+    border: 1px solid #454545;
+    color: #cccccc;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    outline: none;
+}
+
+#findbar input[type="text"]:focus{
+    border-color: #0078d4;
+}
+
+#find-count{
+    flex-shrink: 0;
+    min-width: 52px;
+    text-align: right;
+    color: #9d9d9d;
+    font-size: 11px;
+}
+
+#findbar .find-btn{
+    flex-shrink: 0;
+    background: #3c3c3c;
+    border: 1px solid #454545;
+    color: #cccccc;
+    border-radius: 4px;
+    padding: 4px 9px;
+    font-size: 12px;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+#findbar .find-btn:hover{
+    background: #094771;
+    color: #ffffff;
+}
+
+#findbar .find-options{
+    display: flex;
+    gap: 12px;
+    padding: 2px 4px;
+}
+
+#findbar .find-options label{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    color: #9d9d9d;
+}
+
+#findbar .find-options input{
+    accent-color: #0078d4;
+}
+
+/* 查找匹配高亮（覆盖 Monaco 内部选中样式） */
+.find-match{
+    background: rgba(224, 108, 117, .35);
+    box-shadow: inset 0 0 0 1px rgba(224, 108, 117, .45);
+}
+
 /* ---------------- 浅色主题（html.theme-light body） ---------------- */
 html.theme-light body{
     background: #fafafa;
@@ -865,7 +1026,8 @@ html.theme-light body header{
 }
 
 html.theme-light body header #run-btn:hover,
-html.theme-light body header #setting-btn:hover{
+html.theme-light body header #setting-btn:hover,
+html.theme-light body header #find-btn:hover{
     background: #e6e6e6;
 }
 
@@ -968,35 +1130,61 @@ html.theme-light body #fileframe .folder.selected > span{
 }
 
 /* 右键菜单浅色 */
-html.theme-light body #tree-menu{
+html.theme-light body #tree-menu, html.theme-light body #editor-menu{
     background: #ffffff;
     border-color: #e6e6e6;
     box-shadow: 0 2px 8px rgba(0,0,0,.15);
 }
 
-html.theme-light body #tree-menu .tree-menu-item{
+html.theme-light body #tree-menu .tree-menu-item, html.theme-light body #editor-menu .tree-menu-item{
     color: #1a1a1a;
 }
 
-html.theme-light body #tree-menu .tree-menu-item:hover{
+html.theme-light body #tree-menu .tree-menu-item:hover, html.theme-light body #editor-menu .tree-menu-item:hover{
     background: #d0e8f9;
     color: #1a1a1a;
 }
 
 html.theme-light body #tree-menu .tree-menu-item.disabled,
-html.theme-light body #tree-menu .tree-menu-item.disabled:hover{
+html.theme-light body #tree-menu .tree-menu-item.disabled:hover,
+html.theme-light body #editor-menu .tree-menu-item.disabled,
+html.theme-light body #editor-menu .tree-menu-item.disabled:hover{
     color: #a0a0a0;
     background: transparent;
 }
 
-html.theme-light body #tree-menu .tree-menu-sep{
+html.theme-light body #tree-menu .tree-menu-sep, html.theme-light body #editor-menu .tree-menu-sep{
     background: #e6e6e6;
 }
 
-html.theme-light body #tree-menu .tree-menu-item.has-submenu .tree-menu-sub{
+html.theme-light body #tree-menu .tree-menu-item.has-submenu .tree-menu-sub, html.theme-light body #editor-menu .tree-menu-item.has-submenu .tree-menu-sub{
     background: #ffffff;
     border-color: #e6e6e6;
 }
+
+/* 引用结果面板浅色 */
+html.theme-light body #references-panel{
+    background: #ffffff;
+    border-color: #e6e6e6;
+    color: #1a1a1a;
+}
+
+html.theme-light body #references-panel .ref-head{
+    background: #f0f0f0;
+    border-bottom-color: #e6e6e6;
+}
+
+html.theme-light body #references-panel .ref-close{ color: #666666; }
+
+html.theme-light body #references-panel .ref-close:hover{ color: #1a1a1a; }
+
+html.theme-light body #references-panel .ref-item:hover{ background: #d0e8f9; }
+
+html.theme-light body #references-panel .ref-loc{ color: #0a7bd6; }
+
+html.theme-light body #references-panel .ref-text{ color: #666666; }
+
+html.theme-light body #references-panel .ref-empty{ color: #666666; }
 
 /* 输入弹层浅色 */
 html.theme-light body #tree-input .tree-input-box{
@@ -1065,6 +1253,39 @@ html.theme-light body #build-close{
 
 html.theme-light body #build-close:hover{
     background: #ececec;
+}
+
+html.theme-light body #findbar{
+    background: #ffffff;
+    border-color: #e0e0e0;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12);
+    color: #424242;
+}
+
+html.theme-light body #findbar input[type="text"]{
+    background: #fafafa;
+    border-color: #d8d8d8;
+    color: #222222;
+}
+
+html.theme-light body #findbar input[type="text"]:focus{
+    border-color: #007acc;
+}
+
+html.theme-light body #findbar .find-btn{
+    background: #f0f0f0;
+    border-color: #d8d8d8;
+    color: #333333;
+}
+
+html.theme-light body #findbar .find-btn:hover{
+    background: #d0e8f9;
+    color: #1a1a1a;
+}
+
+html.theme-light body #findbar .find-options label,
+html.theme-light body #findbar #find-count{
+    color: #6a6a6a;
 }
 
 html.theme-light body .nav-item{

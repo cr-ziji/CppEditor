@@ -59,6 +59,11 @@ contextBridge.exposeInMainWorld('editorAPI', {
   // 编译并运行 .c/.cpp 文件；返回 { ok, exePath, message } 或 { ok:false, message }。
   runFile: (filePath) => ipcRenderer.invoke('run:compile-and-run', filePath),
 
+  // 编辑器右键菜单复制 / 粘贴 / 剪切用的文本剪贴板（绕过 Monaco 剪贴板权限限制）。
+  // sandbox 预加载脚本无 clipboard 模块，改由主进程 IPC 读写。
+  readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
+  writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
+
   // 文件树操作。剪贴板使用 CF_HDROP（FileNameW），与 Windows 资源管理器互通。
   // 复制/剪切：将文件列表写入剪贴板；返回 { ok, count } 或 { ok:false, message }。
   treeCopy: (paths) => ipcRenderer.invoke('filetree:copy', paths),

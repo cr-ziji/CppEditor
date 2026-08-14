@@ -1003,6 +1003,13 @@ function setupFileIpc() {
       return { ok: false, message: err.message };
     }
   });
+
+  // 编辑器复制/粘贴/剪切用文本剪贴板。sandbox 预加载脚本中无 clipboard 模块，故经主进程读写。
+  ipcMain.handle('clipboard:read-text', () => clipboard.readText());
+  ipcMain.handle('clipboard:write-text', (_event, text) => {
+    if (typeof text === 'string') clipboard.writeText(text);
+    return { ok: true };
+  });
 }
 
 // 校验文件树操作路径：仅允许项目目录内的绝对路径，去重
