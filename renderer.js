@@ -1090,7 +1090,6 @@ function rendererFileTree(paths, faNode) {
     const node = document.createElement('div');
     if (path.type === 'directory'){
       const nodeExpand = document.createElement('div');
-      nodeExpand.innerText = '>';
       nodeExpand.classList.add('expand');
       nodeExpand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(node); });
       node.appendChild(nodeExpand);
@@ -1604,7 +1603,6 @@ async function loadProjectFile(){
   projectFileTree = projectTree.filter(path => path.name !== '.cache' && path.name !== 'compile_commands.json');
   projectDom = document.createElement('div');
   const projectExpand = document.createElement('div');
-  projectExpand.innerText = '>';
   projectExpand.classList.add('expand');
   projectExpand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(projectDom); })
   projectDom.appendChild(projectExpand);
@@ -1772,7 +1770,6 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer, isDirectory) {
       } else {
         el.classList.add('folder');
         const expand = document.createElement('div');
-        expand.innerText = '>';
         expand.classList.add('expand');
         expand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(el); });
         el.appendChild(expand);
@@ -1820,7 +1817,6 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer, isDirectory) {
         el.classList.add('folder');
         el.dataset.type = 'directory';
         const expand = document.createElement('div');
-        expand.innerText = '>';
         expand.classList.add('expand');
         expand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(el); });
         el.insertBefore(expand, el.firstChild);

@@ -438,32 +438,43 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 #fileframe .folder, #fileframe .file{
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    padding-left: 18px;
+    padding-right: 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
 }
 
 #fileframe .folder{
-    padding-left: 20px;
     position: relative;
 }
 
-#fileframe .file{
-    cursor: pointer;
-}
-
+#fileframe .folder:hover,
 #fileframe .file:hover{
     background-color: #2a2d2e;
 }
 
+/* 展开/折叠三角：CSS 边框三角形，旋转时带过渡动画 */
 #fileframe .folder > .expand{
-    content: '>';
+    width: 0;
+    height: 0;
+    border-left: 7px solid #8b8b8b;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
     position: absolute;
-    top: -1.5px;
-    left: 5px;
+    top: 50%;
+    left: 6px;
+    transform: translateY(-50%);
+    transition: transform 0.15s ease, border-left-color 0.12s ease;
     cursor: pointer;
 }
 
+#fileframe .folder:hover > .expand{
+    border-left-color: #d0d0d0;
+}
+
 #fileframe .folder.expanded > .expand{
-    transform: rotate(90deg);
+    transform: translateY(-50%) rotate(90deg);
 }
 
 #fileframe .children{
@@ -472,9 +483,9 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 }
 
 #fileframe .folder > img, #fileframe .file > img{
-    width: 1.4em;
-    height: 1.4em;
-    margin-right: 2px;
+    width: 1.35em;
+    height: 1.35em;
+    margin-right: 5px;
     flex-shrink: 0;
 }
 
@@ -482,6 +493,7 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     flex: 1;
     min-width: 0;
     white-space: nowrap;
+    font-size: 13px;
 }
 
 /* 未打开文件夹时显示的蓝色「打开文件夹」按钮（类似 VSCode） */
@@ -931,8 +943,17 @@ html.theme-light body #filetree::-webkit-scrollbar-thumb{
     background: #d2d2d2;
 }
 
+html.theme-light body #fileframe .folder:hover,
 html.theme-light body #fileframe .file:hover{
     background-color: #ececec;
+}
+
+html.theme-light body #fileframe .folder > .expand{
+    border-left-color: #7a8494;
+}
+
+html.theme-light body #fileframe .folder:hover > .expand{
+    border-left-color: #3a4150;
 }
 
 /* 文件树多选高亮浅色 */
