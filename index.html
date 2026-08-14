@@ -71,6 +71,15 @@
 
     </div>
 
+    <!-- 底部编译输出面板：展示 g++ 编译产生的警告 / 错误 -->
+    <div id="build-output" style="display:none">
+      <div class="build-head">
+        <span class="build-title">编译输出</span>
+        <button id="build-close" title="关闭">×</button>
+      </div>
+      <div class="build-body"></div>
+    </div>
+
     <!-- monaco AMD loader -->
     <script src="editor://app/vs/loader.js"></script>
     <!-- 应用逻辑 -->

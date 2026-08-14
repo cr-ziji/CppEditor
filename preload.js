@@ -66,6 +66,13 @@ contextBridge.exposeInMainWorld('editorAPI', {
     return () => ipcRenderer.removeListener('lsp:project-changed', listener);
   },
 
+  // 订阅「编译参数已变化，请重启 clangd」事件（设置窗口修改编译设置后触发）。
+  onLspRestart: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('lsp:restart', listener);
+    return () => ipcRenderer.removeListener('lsp:restart', listener);
+  },
+
   // 订阅扩展名关联打开的文件（主进程经 second-instance 或启动参数转发）。
   // 回调参数为文件绝对路径；是否属于项目、是否已设置项目都无影响。
   onOpenExternalFile: (callback) => {

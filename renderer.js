@@ -377,6 +377,24 @@ function showSaveStatus(text, isError) {
   }, 4000);
 }
 
+// 底部编译输出面板：展示 g++ 编译的警告 / 错误（kind: 'warning' | 'error'）
+function showBuildOutput(kind, text) {
+  const panel = document.getElementById('build-output');
+  if (!panel) return;
+  panel.classList.remove('error', 'warning');
+  panel.classList.add(kind === 'error' ? 'error' : 'warning');
+  const title = panel.querySelector('.build-title');
+  if (title) title.textContent = kind === 'error' ? '编译错误' : '编译警告';
+  const body = panel.querySelector('.build-body');
+  if (body) body.textContent = text;
+  panel.style.display = 'flex';
+}
+
+function hideBuildOutput() {
+  const panel = document.getElementById('build-output');
+  if (panel) panel.style.display = 'none';
+}
+
 // 保存当前激活标签页：
 //  - 已有路径（从项目树打开）：写回该文件
 //  - 未命名标签页：先选择保存目录，写入 main.cpp，再绑定路径
@@ -2210,18 +2228,25 @@ function initHeader(){
       return;
     }
     if (result && result.ok) {
+      // 有警告：展示在底部面板（不影响运行）
+      if (result.output) showBuildOutput('warning', result.output);
       showSaveStatus('已启动: ' + basename(result.exePath || t.path));
     } else {
       const msg = (result && result.message) || '编译失败';
+      if (result && result.output) showBuildOutput('error', result.output);
       console.error(msg);
-      const firstLine = msg.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '编译失败';
-      showSaveStatus(firstLine.slice(0, 120), true);
+      showSaveStatus('编译失败', true);
     }
   })
 
   document.getElementById('setting-btn').addEventListener('click', () => {
     window.editorAPI.openSettingWindow();
   })
+
+  const buildCloseBtn = document.getElementById('build-close');
+  if (buildCloseBtn) {
+    buildCloseBtn.addEventListener('click', hideBuildOutput);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2252,6 +2277,13 @@ function init() {
   window.editorAPI.onSettingsChanged((s) => {
     if (s && s.editor) appSettings = s;
     applyEditorSettings();
+  });
+
+  // 编译设置变化后主进程广播 lsp:restart：重启 clangd 以加载新编译参数
+  window.editorAPI.onLspRestart(() => {
+    if (shutdown) return;
+    reconnectAttempts = 0;
+    bootstrap();
   });
 
   // 项目目录文件增删：通知 clangd 重新索引（compile_commands.json 已在主进程重建）

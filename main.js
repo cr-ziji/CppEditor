@@ -239,7 +239,8 @@ function findSourceFiles(dir, maxDepth = 8) {
 }
 
 // 在项目目录生成 compile_commands.json，让 clangd 以相同编译参数索引整个目录。
-// 编译器与 -std 按文件语言区分：.c 用 clang + c11，.cpp 用 clang++ + c++17。
+// 编译器与 -std 按文件语言区分：.c 用 clang，.cpp 用 clang++；其余参数
+// （语言标准、警告级别、自定义编译参数）取自设置。
 function writeCompileCommands(projectDir) {
   try {
     const base = buildBaseFlags();
@@ -248,11 +249,10 @@ function writeCompileCommands(projectDir) {
     const entries = files.map((file) => {
       const isC = path.extname(file).toLowerCase() === '.c';
       const compiler = isC ? 'clang' : 'clang++';
-      const std = isC ? '-std=c11' : '-std=c++17';
       return {
         directory: projectDir,
         file,
-        arguments: [compiler, ...base, std, file],
+        arguments: [compiler, ...base, ...compileSettingsArgs(isC), file],
       };
     });
     fs.writeFileSync(
@@ -586,7 +586,7 @@ function setupLspIpc() {
       ok: result.ok,
       message: result.message,
       clangdPath: result.clangdPath,
-      fallbackFlags: buildBaseFlags(),
+      fallbackFlags: clangdFallbackFlags(),
       offsetEncoding: 'utf-16',
       projectDir: projectPath,
     };
@@ -645,10 +645,17 @@ function setupSettingsIpc() {
 
   ipcMain.handle('settings:save', (_event, patch) => {
     if (patch && typeof patch === 'object') {
+      const compileChanged = patch.compile && typeof patch.compile === 'object';
       for (const key of ['compile', 'editor', 'templates', 'shortcuts']) {
         if (patch[key] && typeof patch[key] === 'object') appSettings[key] = patch[key];
       }
       persistSettings();
+      // 仅编译相关设置变化才需要重建 compile_commands.json 并重启 clangd；
+      // 外观/模板/快捷键等变化不打扰语言服务器
+      if (compileChanged) {
+        if (projectPath) writeCompileCommands(projectPath);
+        emitToRenderer('lsp:restart');
+      }
       // 通知主窗口即时应用最新设置（主题、字号、括号行为等）
       emitToRenderer('settings:changed', appSettings);
     }
@@ -847,6 +854,55 @@ function getGccPath() {
   return fs.existsSync(bundled) ? bundled : 'gcc';
 }
 
+// 把空格分隔的参数字符串拆成数组（支持单/双引号包裹的含空格参数）
+function splitArgs(str) {
+  if (!str || typeof str !== 'string') return [];
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(str))) {
+    out.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]);
+  }
+  return out;
+}
+
+// 设置中的警告级别（0-4）→ 编译警告标志
+const WARNING_LEVELS = [
+  '-w',
+  '-W',
+  '-Wall',
+  '-Wall -Wextra',
+  '-Wall -Wextra -Wpedantic',
+];
+
+// 由设置拼出编译参数：语言标准 + 警告级别 + 用户自定义编译参数
+function compileSettingsArgs(isC) {
+  const c = appSettings.compile || {};
+  const args = ['-std=' + (isC ? (c.languageStandardC || 'c11') : (c.languageStandardCpp || 'c++17'))];
+  const warn = WARNING_LEVELS[Number(c.warningLevel)] || WARNING_LEVELS[2];
+  args.push(...splitArgs(warn));
+  args.push(...splitArgs(c.compilerCommand));
+  return args;
+}
+
+// 由设置拼出链接参数（放在编译命令末尾）
+function linkerSettingsArgs() {
+  const c = appSettings.compile || {};
+  return splitArgs(c.linkerCommand);
+}
+
+// clangd 的兜底编译参数（未命中 compile_commands.json 的文件使用，例如单独打开的
+// 头文件）。基础头文件路径 + 设置中的警告级别/编译参数 + C++ 语言标准，保证头文件
+// 的 __cplusplus 等宏与设置一致（.c 文件此时受标准限制，主场景是 C++）。
+function clangdFallbackFlags() {
+  const flags = buildBaseFlags();
+  const c = appSettings.compile || {};
+  flags.push(...splitArgs(WARNING_LEVELS[Number(c.warningLevel)] || WARNING_LEVELS[2]));
+  flags.push(...splitArgs(c.compilerCommand));
+  flags.push('-std=' + (c.languageStandardCpp || 'c++17'));
+  return flags;
+}
+
 // 让子进程能找到 MinGW 的 DLL（libstdc++-6.dll 等）
 function mingwEnv() {
   const binDir = path.join(getMingwRoot(), 'bin');
@@ -873,6 +929,28 @@ function runProcess(cmd, args, cwd, env) {
 }
 
 function setupRunIpc() {
+  // 启动编译出的 exe：经 cmd start 在新窗口中启动目标程序。
+  // 直接 spawn 控制台程序通常不会弹出可见窗口；cmd /c start 会为目标
+  // 分配一个新的控制台窗口。外层再套 cmd /k，程序退出后窗口保留，
+  // 便于查看输出（避免 hello world 一闪而过）。windowsHide 只隐藏
+  // 最外层 cmd 本身，start 创建的目标窗口不受影响。
+  const launchExe = (exePath, dir) => {
+    try {
+      const cmdPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+      const child = spawn(cmdPath, ['/c', 'start', '', 'cmd', '/k', exePath], {
+        cwd: dir,
+        env: mingwEnv(),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+    } catch (err) {
+      return { ok: false, message: '启动程序失败: ' + err.message };
+    }
+    return { ok: true, exePath, message: '已启动: ' + exePath };
+  };
+
   ipcMain.handle('run:compile-and-run', async (_event, filePath) => {
     if (typeof filePath !== 'string' || !filePath) {
       return { ok: false, message: '无效的文件路径' };
@@ -889,10 +967,11 @@ function setupRunIpc() {
     const compiler = isC ? getGccPath() : getGxxPath();
     const exePath = filePath.slice(0, filePath.length - ext.length) + '.exe';
     const dir = path.dirname(filePath);
-    const stdFlag = isC ? '-std=c11' : '-std=c++17';
-    // -static 静态链接 libstdc++/libgcc/libwinpthread，生成的 exe 不依赖
-    // mingw 运行时 DLL（libstdc++-6.dll 等），可独立运行
-    const args = [filePath, '-o', exePath, stdFlag, '-static'];
+    // 编译前同步 compile_commands.json（当前项目存在时），确保 clangd 索引参数与本次编译一致
+    if (projectPath && fs.existsSync(projectPath)) writeCompileCommands(projectPath);
+    // 编译参数来自设置（语言标准/警告级别/自定义编译参数）+ 用户链接参数。
+    // 不默认 -static：动态链接 mingw 运行时 DLL，运行时由 mingwEnv 提供 PATH。
+    const args = [filePath, '-o', exePath, ...compileSettingsArgs(isC), ...linkerSettingsArgs()];
 
     let result;
     try {
@@ -901,32 +980,20 @@ function setupRunIpc() {
       return { ok: false, message: '无法启动编译器: ' + err.message };
     }
     if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout || '').trim();
+      const output = (result.stderr || result.stdout || '').trim();
       return {
         ok: false,
-        message: '编译失败' + (detail ? ':\n' + detail : ''),
+        message: '编译失败' + (output ? ':\n' + output : ''),
+        output,
       };
     }
 
-    // 打开编译出的 exe：经 cmd start 在新窗口中启动目标程序。
-    // 直接 spawn 控制台程序通常不会弹出可见窗口；cmd /c start 会为目标
-    // 分配一个新的控制台窗口。外层再套 cmd /k，程序退出后窗口保留，
-    // 便于查看输出（避免 hello world 一闪而过）。windowsHide 只隐藏
-    // 最外层 cmd 本身，start 创建的目标窗口不受影响。
-    try {
-      const cmdPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
-      const child = spawn(cmdPath, ['/c', 'start', '', 'cmd', '/k', exePath], {
-        cwd: dir,
-        env: mingwEnv(),
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      child.unref();
-    } catch (err) {
-      return { ok: false, message: '启动程序失败: ' + err.message };
-    }
-    return { ok: true, exePath, message: '已启动: ' + exePath };
+    // 编译成功：g++ 的警告输出到 stderr，随返回值带给渲染进程在底部面板展示；
+    // 警告不影响运行，直接启动程序，不再询问用户。
+    const output = (result.stderr || result.stdout || '').trim();
+
+    const launched = launchExe(exePath, dir);
+    return { ...launched, output };
   });
 }
 

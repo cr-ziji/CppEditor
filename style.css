@@ -96,6 +96,61 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     overflow: hidden;
 }
 
+/* 底部编译输出面板：显示时 flex，固定高度，内容可滚动 */
+#build-output{
+    display: none;
+    flex-direction: column;
+    height: 170px;
+    flex-shrink: 0;
+    border-top: 1px solid #3c3c3c;
+    background: #252526;
+}
+
+#build-output .build-head{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 10px;
+    border-bottom: 1px solid #3c3c3c;
+    font-size: 12px;
+    color: #cccccc;
+    flex-shrink: 0;
+}
+
+#build-output .build-title{
+    font-weight: 600;
+}
+
+#build-output.warning .build-title{ color: #dcdcaa; }
+#build-output.error .build-title{ color: #f48771; }
+
+#build-output .build-body{
+    flex: 1;
+    overflow: auto;
+    padding: 6px 10px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #cccccc;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+#build-close{
+    background: none;
+    border: none;
+    color: #cccccc;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+#build-close:hover{
+    background: #3c3c3c;
+}
+
 #textframe{
     display: flex;
     flex-direction: column;
@@ -731,6 +786,33 @@ html.theme-light body #fileframe .file:hover{
 html.theme-light body .settings-nav{
     background: #f6f6f6;
     border-right-color: #e6e6e6;
+}
+
+/* 底部编译输出面板浅色 */
+html.theme-light body #build-output{
+    border-top-color: #e6e6e6;
+    background: #ffffff;
+}
+
+html.theme-light body #build-output .build-head{
+    border-bottom-color: #e6e6e6;
+    color: #424242;
+}
+
+html.theme-light body #build-output .build-title{ color: #424242; }
+html.theme-light body #build-output.warning .build-title{ color: #795e26; }
+html.theme-light body #build-output.error .build-title{ color: #b00020; }
+
+html.theme-light body #build-output .build-body{
+    color: #424242;
+}
+
+html.theme-light body #build-close{
+    color: #424242;
+}
+
+html.theme-light body #build-close:hover{
+    background: #ececec;
 }
 
 html.theme-light body .nav-item{
