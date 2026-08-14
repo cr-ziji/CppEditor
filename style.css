@@ -634,161 +634,166 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     background: #555555;
 }
 
-/* ---------------- 浅色主题（body.theme-light） ---------------- */
-body.theme-light{
+/* ---------------- 浅色主题（html.theme-light body） ---------------- */
+html.theme-light body{
     background: #fafafa;
     color: #424242;
 }
 
-body.theme-light header{
+html.theme-light body header{
     border-bottom: 1px solid #e6e6e6;
 }
 
-body.theme-light header #run-btn:hover,
-body.theme-light header #setting-btn:hover{
+html.theme-light body header #run-btn:hover,
+html.theme-light body header #setting-btn:hover{
     background: #e6e6e6;
 }
 
-body.theme-light header #minimize-btn:hover,
-body.theme-light header #maximize-btn:hover,
-body.theme-light header #unmaximize-btn:hover{
+html.theme-light body header #minimize-btn:hover,
+html.theme-light body header #maximize-btn:hover,
+html.theme-light body header #unmaximize-btn:hover{
     background-color: #e6e6e6;
 }
 
-body.theme-light #tabbar{
+/* 亮色下关闭按钮 hover 变红，图标反白增加对比度（深灰图标在红底上看不清） */
+html.theme-light body header #close-btn:hover img{
+    filter: brightness(0) invert(1);
+}
+
+html.theme-light body #tabbar{
     border-bottom-color: #e6e6e6;
 }
 
-body.theme-light #tabbar::-webkit-scrollbar-thumb{
+html.theme-light body #tabbar::-webkit-scrollbar-thumb{
     background: #d2d2d2;
 }
 
-body.theme-light #tabbar .tab:hover{
+html.theme-light body #tabbar .tab:hover{
     background-color: #ececec;
 }
 
-body.theme-light #tabbar .tab.active{
+html.theme-light body #tabbar .tab.active{
     background-color: #e0e0e0;
 }
 
-body.theme-light #tabbar .tab button{
+html.theme-light body #tabbar .tab button{
     color: #5a5a5a;
 }
 
-body.theme-light #tabbar .tab button:hover{
+html.theme-light body #tabbar .tab button:hover{
     background-color: #c6c6c6;
     color: #222222;
 }
 
-body.theme-light #fileview{
+html.theme-light body #fileview{
     background: #ffffff;
 }
 
-body.theme-light #fileview .bininfo{
+html.theme-light body #fileview .bininfo{
     color: #5a5a5a;
 }
 
-body.theme-light #fileview .bintitle{
+html.theme-light body #fileview .bintitle{
     color: #222222;
 }
 
-body.theme-light #statusbar{
+html.theme-light body #statusbar{
     background: #f6f6f6;
     border-top-color: #e6e6e6;
     color: #5a5a5a;
 }
 
-body.theme-light #diag-status{
+html.theme-light body #diag-status{
     color: #222222;
 }
 
-body.theme-light #fileframe{
+html.theme-light body #fileframe{
     border-right-color: #e6e6e6;
 }
 
-body.theme-light #filetoolbar{
+html.theme-light body #filetoolbar{
     border-bottom-color: #e6e6e6;
 }
 
-body.theme-light #switch-folder-btn:hover{
+html.theme-light body #switch-folder-btn:hover{
     background: #ececec;
 }
 
-body.theme-light #filetree::-webkit-scrollbar-thumb{
+html.theme-light body #filetree::-webkit-scrollbar-thumb{
     background: #d2d2d2;
 }
 
-body.theme-light #fileframe .file:hover{
+html.theme-light body #fileframe .file:hover{
     background-color: #ececec;
 }
 
 /* 设置窗口浅色 */
-body.theme-light .settings-nav{
+html.theme-light body .settings-nav{
     background: #f6f6f6;
     border-right-color: #e6e6e6;
 }
 
-body.theme-light .nav-item{
+html.theme-light body .nav-item{
     color: #5a5a5a;
 }
 
-body.theme-light .nav-item:hover{
+html.theme-light body .nav-item:hover{
     background: #ececec;
     color: #333333;
 }
 
-body.theme-light .nav-item.active{
+html.theme-light body .nav-item.active{
     background: #e0e0e0;
     color: #111111;
 }
 
-body.theme-light .panel-heading{
+html.theme-light body .panel-heading{
     color: #111111;
 }
 
-body.theme-light .panel-sub,
-body.theme-light .group-heading{
+html.theme-light body .panel-sub,
+html.theme-light body .group-heading{
     color: #5a5a5a;
 }
 
-body.theme-light .group-heading{
+html.theme-light body .group-heading{
     border-bottom-color: #e6e6e6;
 }
 
-body.theme-light .group .row .label,
-body.theme-light .group .row.check label{
+html.theme-light body .group .row .label,
+html.theme-light body .group .row.check label{
     color: #333333;
 }
 
-body.theme-light .group .row input[type="text"],
-body.theme-light .group .row input[type="number"],
-body.theme-light .group .row select,
-body.theme-light .group .row textarea{
+html.theme-light body .group .row input[type="text"],
+html.theme-light body .group .row input[type="number"],
+html.theme-light body .group .row select,
+html.theme-light body .group .row textarea{
     background: #ffffff;
     border-color: #d8d8d8;
     color: #222222;
 }
 
-body.theme-light .group .row input:focus,
-body.theme-light .group .row select:focus,
-body.theme-light .group .row textarea:focus{
+html.theme-light body .group .row input:focus,
+html.theme-light body .group .row select:focus,
+html.theme-light body .group .row textarea:focus{
     border-color: #007acc;
 }
 
-body.theme-light .group .row textarea::-webkit-scrollbar-track{
+html.theme-light body .group .row textarea::-webkit-scrollbar-track{
     background: #ffffff;
 }
 
-body.theme-light .group .row textarea::-webkit-scrollbar-thumb{
+html.theme-light body .group .row textarea::-webkit-scrollbar-thumb{
     background: #d2d2d2;
     border-color: #ffffff;
 }
 
-body.theme-light .group .row textarea::-webkit-scrollbar-thumb:hover{
+html.theme-light body .group .row textarea::-webkit-scrollbar-thumb:hover{
     background: #c0c0c0;
 }
 
-body.theme-light .group .row input[type="number"]::-webkit-inner-spin-button{
+html.theme-light body .group .row input[type="number"]::-webkit-inner-spin-button{
     background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14'><path d='M5 1L9 5H1z' fill='%235a5a5a'/><path d='M5 13L1 9H9z' fill='%235a5a5a'/></svg>");
 }
 

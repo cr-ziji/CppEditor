@@ -1834,10 +1834,18 @@ function clampFontSize(v) {
   return 14;
 }
 
+// 文件树字号：直接对 #filetree 容器设置，所有节点文字/图标（em 单位）随继承缩放。
+// 首帧渲染前（脚本加载时）就应用，避免窗口显示后再跳变。
+function applyTreeFontSize(v) {
+  const treeEl = document.getElementById('filetree');
+  if (treeEl) treeEl.style.fontSize = clampFontSize(v) + 'px';
+}
+
 // 应用配色主题：Monaco 主题（全局 API，不依赖 editor 实例）+ 应用界面深浅色。
 // monaco 尚未加载时只切换界面主题，编辑器创建后再应用 Monaco 主题。
 function applyAppTheme(theme) {
   appTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.classList.toggle('theme-light', appTheme === 'light');
   document.body.classList.toggle('theme-light', appTheme === 'light');
   applyThemeToIcons();
   if (typeof monaco !== 'undefined' && monaco.editor) {
@@ -2308,18 +2316,31 @@ function init() {
 }
 
 // 尽早读取设置应用主题：body 与图标此时已可访问，monaco 未加载则由 guard 兜底。
-// 主进程在 URL 中带 theme 参数，可同步应用，避免浅色主题下先闪深色再切换。
+// 主进程在 URL 中带 theme/fontSize/treeFontSize 参数，可同步应用：
+// - theme：避免浅色主题下先闪深色再切换；
+// - treeFontSize：文件树字号在首帧前就位，避免窗口显示后字体/图标再缩放。
 (function prefetchAppSettings() {
-  const themeFromUrl = new URLSearchParams(location.search).get('theme');
+  const q = new URLSearchParams(location.search);
+  const themeFromUrl = q.get('theme');
   if (themeFromUrl === 'light' || themeFromUrl === 'dark') {
     appSettings = { editor: { theme: themeFromUrl } };
     applyAppTheme(themeFromUrl);
+  }
+  const fontFromUrl = Number(q.get('fontSize'));
+  if (Number.isFinite(fontFromUrl)) {
+    appSettings.editor = appSettings.editor || {};
+    appSettings.editor.fontSize = clampFontSize(fontFromUrl);
+  }
+  const treeFontFromUrl = Number(q.get('treeFontSize'));
+  if (Number.isFinite(treeFontFromUrl)) {
+    applyTreeFontSize(treeFontFromUrl);
   }
   if (!window.editorAPI) return;
   window.editorAPI.loadSettings()
     .then((s) => {
       if (s && s.editor) appSettings = s;
       applyAppTheme(s && s.editor && s.editor.theme);
+      applyTreeFontSize(s && s.editor && s.editor.fileTreeFontSize);
     })
     .catch(() => {});
 })();

@@ -3,6 +3,15 @@
 <head>
     <meta charset="UTF-8" />
     <title>设置</title>
+    <script>
+      // 首帧前同步应用主题：在 <html> 根上加 class，CSS 一旦应用即按主题着色，避免先闪深色
+      (function () {
+        var t = new URLSearchParams(location.search).get('theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.classList.add(t === 'light' ? 'theme-light' : 'theme-dark');
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="editor://app/style.css">
 </head>
 <body>

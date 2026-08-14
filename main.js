@@ -939,6 +939,12 @@ function createWindow() {
     defaultHeight: 860
   });
 
+  const e = appSettings.editor || {};
+  const urlTheme = e.theme === 'light' ? 'light' : 'dark';
+  const numParam = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+  const urlFont = numParam(e.fontSize, 14);
+  const urlTreeFont = numParam(e.fileTreeFontSize, 14);
+
   mainWindow = new BrowserWindow({
     x: mainWindowState.x,
     y: mainWindowState.y,
@@ -946,7 +952,9 @@ function createWindow() {
     height: mainWindowState.height,
     minWidth: 640,
     minHeight: 400,
-    backgroundColor: '#1e1e1e',
+    show: false,
+    paintWhenInitiallyHidden: false,
+    backgroundColor: urlTheme === 'light' ? '#fafafa' : '#1e1e1e',
     autoHideMenuBar: true,
     title: 'CppEditor',
     frame: false,
@@ -961,9 +969,18 @@ function createWindow() {
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  const urlTheme = appSettings.editor && appSettings.editor.theme === 'light' ? 'light' : 'dark';
+  // 渲染完成后再显示窗口，避免启动时闪烁；超时兜底保证窗口始终能出现
+  const showTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+  }, 5000);
+  mainWindow.once('ready-to-show', () => {
+    clearTimeout(showTimer);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+  });
+
   mainWindow.loadURL(
-    EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT) + '&theme=' + urlTheme
+    EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT) +
+    '&theme=' + urlTheme + '&fontSize=' + urlFont + '&treeFontSize=' + urlTreeFont
   );
 
   // 页面加载完成后，若有待打开的关联文件（启动时带文件参数，或加载期间收到
@@ -994,12 +1011,16 @@ function createWindow() {
 }
 
 function createSettingWindow() {
+  const urlTheme = appSettings.editor && appSettings.editor.theme === 'light' ? 'light' : 'dark';
+
   settingWindow = new BrowserWindow({
     width: 640,
     height: 620,
     minWidth: 520,
     minHeight: 560,
-    backgroundColor: '#1e1e1e',
+    show: false,
+    paintWhenInitiallyHidden: false,
+    backgroundColor: urlTheme === 'light' ? '#fafafa' : '#1e1e1e',
     autoHideMenuBar: true,
     title: '设置',
     frame: false,
@@ -1014,7 +1035,14 @@ function createSettingWindow() {
 
   settingWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  const urlTheme = appSettings.editor && appSettings.editor.theme === 'light' ? 'light' : 'dark';
+  const showTimer = setTimeout(() => {
+    if (settingWindow && !settingWindow.isDestroyed()) settingWindow.show();
+  }, 5000);
+  settingWindow.once('ready-to-show', () => {
+    clearTimeout(showTimer);
+    if (settingWindow && !settingWindow.isDestroyed()) settingWindow.show();
+  });
+
   settingWindow.loadURL(
       EDITOR_SCHEME + '://app/setting.html?root=' + encodeURIComponent(APP_ROOT) + '&theme=' + urlTheme
   );

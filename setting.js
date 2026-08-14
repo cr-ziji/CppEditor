@@ -118,6 +118,7 @@
     // 设置窗口自身随主题切换深浅色，并切换浅色版图标
     function applyAppTheme(theme) {
         const light = theme === 'light';
+        document.documentElement.classList.toggle('theme-light', light);
         document.body.classList.toggle('theme-light', light);
         document.querySelectorAll('img[data-light-src]').forEach((img) => {
             img.src = light ? img.dataset.lightSrc : img.dataset.darkSrc;
