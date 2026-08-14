@@ -416,8 +416,10 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 }
 
 #fileframe .folder > img, #fileframe .file > img{
-    width: 20px;
+    width: 1.4em;
+    height: 1.4em;
     margin-right: 2px;
+    flex-shrink: 0;
 }
 
 #fileframe .folder > span, #fileframe .file > span{
@@ -630,6 +632,164 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 
 .group .row textarea::-webkit-scrollbar-thumb:hover{
     background: #555555;
+}
+
+/* ---------------- 浅色主题（body.theme-light） ---------------- */
+body.theme-light{
+    background: #fafafa;
+    color: #424242;
+}
+
+body.theme-light header{
+    border-bottom: 1px solid #e6e6e6;
+}
+
+body.theme-light header #run-btn:hover,
+body.theme-light header #setting-btn:hover{
+    background: #e6e6e6;
+}
+
+body.theme-light header #minimize-btn:hover,
+body.theme-light header #maximize-btn:hover,
+body.theme-light header #unmaximize-btn:hover{
+    background-color: #e6e6e6;
+}
+
+body.theme-light #tabbar{
+    border-bottom-color: #e6e6e6;
+}
+
+body.theme-light #tabbar::-webkit-scrollbar-thumb{
+    background: #d2d2d2;
+}
+
+body.theme-light #tabbar .tab:hover{
+    background-color: #ececec;
+}
+
+body.theme-light #tabbar .tab.active{
+    background-color: #e0e0e0;
+}
+
+body.theme-light #tabbar .tab button{
+    color: #5a5a5a;
+}
+
+body.theme-light #tabbar .tab button:hover{
+    background-color: #c6c6c6;
+    color: #222222;
+}
+
+body.theme-light #fileview{
+    background: #ffffff;
+}
+
+body.theme-light #fileview .bininfo{
+    color: #5a5a5a;
+}
+
+body.theme-light #fileview .bintitle{
+    color: #222222;
+}
+
+body.theme-light #statusbar{
+    background: #f6f6f6;
+    border-top-color: #e6e6e6;
+    color: #5a5a5a;
+}
+
+body.theme-light #diag-status{
+    color: #222222;
+}
+
+body.theme-light #fileframe{
+    border-right-color: #e6e6e6;
+}
+
+body.theme-light #filetoolbar{
+    border-bottom-color: #e6e6e6;
+}
+
+body.theme-light #switch-folder-btn:hover{
+    background: #ececec;
+}
+
+body.theme-light #filetree::-webkit-scrollbar-thumb{
+    background: #d2d2d2;
+}
+
+body.theme-light #fileframe .file:hover{
+    background-color: #ececec;
+}
+
+/* 设置窗口浅色 */
+body.theme-light .settings-nav{
+    background: #f6f6f6;
+    border-right-color: #e6e6e6;
+}
+
+body.theme-light .nav-item{
+    color: #5a5a5a;
+}
+
+body.theme-light .nav-item:hover{
+    background: #ececec;
+    color: #333333;
+}
+
+body.theme-light .nav-item.active{
+    background: #e0e0e0;
+    color: #111111;
+}
+
+body.theme-light .panel-heading{
+    color: #111111;
+}
+
+body.theme-light .panel-sub,
+body.theme-light .group-heading{
+    color: #5a5a5a;
+}
+
+body.theme-light .group-heading{
+    border-bottom-color: #e6e6e6;
+}
+
+body.theme-light .group .row .label,
+body.theme-light .group .row.check label{
+    color: #333333;
+}
+
+body.theme-light .group .row input[type="text"],
+body.theme-light .group .row input[type="number"],
+body.theme-light .group .row select,
+body.theme-light .group .row textarea{
+    background: #ffffff;
+    border-color: #d8d8d8;
+    color: #222222;
+}
+
+body.theme-light .group .row input:focus,
+body.theme-light .group .row select:focus,
+body.theme-light .group .row textarea:focus{
+    border-color: #007acc;
+}
+
+body.theme-light .group .row textarea::-webkit-scrollbar-track{
+    background: #ffffff;
+}
+
+body.theme-light .group .row textarea::-webkit-scrollbar-thumb{
+    background: #d2d2d2;
+    border-color: #ffffff;
+}
+
+body.theme-light .group .row textarea::-webkit-scrollbar-thumb:hover{
+    background: #c0c0c0;
+}
+
+body.theme-light .group .row input[type="number"]::-webkit-inner-spin-button{
+    background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14'><path d='M5 1L9 5H1z' fill='%235a5a5a'/><path d='M5 13L1 9H9z' fill='%235a5a5a'/></svg>");
 }
 
 .group .row textarea::-webkit-scrollbar-corner {

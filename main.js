@@ -649,6 +649,8 @@ function setupSettingsIpc() {
         if (patch[key] && typeof patch[key] === 'object') appSettings[key] = patch[key];
       }
       persistSettings();
+      // 通知主窗口即时应用最新设置（主题、字号、括号行为等）
+      emitToRenderer('settings:changed', appSettings);
     }
     return appSettings;
   });
@@ -959,8 +961,9 @@ function createWindow() {
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
+  const urlTheme = appSettings.editor && appSettings.editor.theme === 'light' ? 'light' : 'dark';
   mainWindow.loadURL(
-    EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT)
+    EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT) + '&theme=' + urlTheme
   );
 
   // 页面加载完成后，若有待打开的关联文件（启动时带文件参数，或加载期间收到
@@ -1011,8 +1014,9 @@ function createSettingWindow() {
 
   settingWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
+  const urlTheme = appSettings.editor && appSettings.editor.theme === 'light' ? 'light' : 'dark';
   settingWindow.loadURL(
-      EDITOR_SCHEME + '://app/setting.html?root=' + encodeURIComponent(APP_ROOT)
+      EDITOR_SCHEME + '://app/setting.html?root=' + encodeURIComponent(APP_ROOT) + '&theme=' + urlTheme
   );
 
   settingWindow.on('closed', () => {

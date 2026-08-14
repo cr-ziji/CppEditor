@@ -1,4 +1,16 @@
-document.addEventListener('DOMContentLoaded', () => {
+(function () {
+    // 脚本在 body 末尾执行，DOM 已就绪。
+    // 主进程在 URL 中带 theme 参数：同步应用主题，避免打开时闪深色。
+    const themeFromUrl = new URLSearchParams(location.search).get('theme');
+    if (themeFromUrl === 'light' || themeFromUrl === 'dark') {
+        applyAppTheme(themeFromUrl);
+    }
+    window.editorAPI.loadSettings()
+        .then((data) => {
+            applyAppTheme((data && data.editor && data.editor.theme) || 'dark');
+        })
+        .catch(() => {});
+
     const closeBtn = document.getElementById('close-btn');
     const navItems = document.querySelectorAll('.settings-nav .nav-item');
     const panels = document.querySelectorAll('.settings-panel');
@@ -7,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const DEFAULTS = {
         editor: {
             fontSize: 14,
+            fileTreeFontSize: 14,
             theme: 'dark',
             autoClosingBrackets: true,
             autoClosingQuotes: true,
@@ -45,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ['languageStandardC', 'compile', 'languageStandardC'],
         ['warningLevel', 'compile', 'warningLevel'],
         ['fontSize', 'editor', 'fontSize'],
+        ['fileTreeFontSize', 'editor', 'fileTreeFontSize'],
         ['themeMode', 'editor', 'theme'],
         ['autoClosingBrackets', 'editor', 'autoClosingBrackets'],
         ['autoClosingQuotes', 'editor', 'autoClosingQuotes'],
@@ -101,6 +115,15 @@ document.addEventListener('DOMContentLoaded', () => {
         window.editorAPI.saveSettings(settings);
     }
 
+    // 设置窗口自身随主题切换深浅色，并切换浅色版图标
+    function applyAppTheme(theme) {
+        const light = theme === 'light';
+        document.body.classList.toggle('theme-light', light);
+        document.querySelectorAll('img[data-light-src]').forEach((img) => {
+            img.src = light ? img.dataset.lightSrc : img.dataset.darkSrc;
+        });
+    }
+
     // 切换导航：显示对应分组面板
     function switchPanel(name) {
         navItems.forEach(item => {
@@ -126,6 +149,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 读取已保存设置后回填；读取失败时也按默认值回填
     window.editorAPI.loadSettings()
-        .then(data => fillForm(data || {}))
-        .catch(() => fillForm({}));
-});
+        .then(data => {
+            fillForm(data || {});
+            applyAppTheme((data && data.editor && data.editor.theme) || 'dark');
+        })
+        .catch(() => {
+            fillForm({});
+            applyAppTheme('dark');
+        });
+
+    // 切换配色主题时，设置窗口自身即时预览对应配色
+    getField('themeMode').addEventListener('change', () => {
+        applyAppTheme(getField('themeMode').value);
+    });
+})();

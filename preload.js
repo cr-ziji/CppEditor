@@ -87,4 +87,11 @@ contextBridge.exposeInMainWorld('editorAPI', {
   // 设置：读取全部设置，以及保存 compile/editor/templates/shortcuts 分组。
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
+
+  // 订阅设置变更（设置窗口保存后，主窗口据此即时应用外观等）。返回取消订阅函数。
+  onSettingsChanged: (callback) => {
+    const listener = (_event, settings) => callback(settings);
+    ipcRenderer.on('settings:changed', listener);
+    return () => ipcRenderer.removeListener('settings:changed', listener);
+  },
 });

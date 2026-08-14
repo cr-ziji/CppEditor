@@ -1035,16 +1035,12 @@ function getFileType(node) {
   return 'unknown';
 }
 
-function getFileIcon(ext) {
-  const iconMap = {
-    'c': 'editor://app/resources/icons/c.svg',
-    'cpp': 'editor://app/resources/icons/cpp.svg',
-    'h': 'editor://app/resources/icons/h.svg',
-    'txt': 'editor://app/resources/icons/txt.svg',
-    'folder': 'editor://app/resources/icons/folder.svg',
-    'unknown': 'editor://app/resources/icons/unknown.svg'
-  };
-  return iconMap[ext] || 'editor://app/resources/icons/unkonwn.svg';
+// 设置文件/文件夹图标：同时记录深/浅色版本路径，主题切换时由 applyThemeToIcons 统一换图
+function setFileIcon(img, iconType) {
+  const name = iconType || 'unknown';
+  img.dataset.darkSrc = 'editor://app/resources/icons/' + name + '.svg';
+  img.dataset.lightSrc = 'editor://app/resources/icons/light/' + name + '.svg';
+  img.src = appTheme === 'light' ? img.dataset.lightSrc : img.dataset.darkSrc;
 }
 
 // 标签页图标：先按扩展名，无扩展名/未知类型时回退到 model 的语言
@@ -1085,7 +1081,7 @@ function rendererFileTree(paths, faNode) {
       node.addEventListener('click', () => openFileTab(path.path));
     }
     const nodeImg = document.createElement('img');
-    nodeImg.src = getFileIcon(getFileType(path));
+    setFileIcon(nodeImg, getFileType(path));
     const nodeText = document.createElement('span');
     nodeText.innerText = path.name;
     node.appendChild(nodeImg);
@@ -1120,7 +1116,7 @@ function renderOpenFolderButton(container) {
   btn.id = 'open-folder-btn';
   btn.type = 'button';
   const img = document.createElement('img');
-  img.src = getFileIcon('folder');
+  setFileIcon(img, 'folder');
   const span = document.createElement('span');
   span.textContent = '打开文件夹';
   btn.appendChild(img);
@@ -1136,7 +1132,7 @@ function renderSwitchFolderButton(toolbar) {
   btn.type = 'button';
   btn.title = '切换文件夹';
   const img = document.createElement('img');
-  img.src = getFileIcon('folder');
+  setFileIcon(img, 'folder');
   btn.appendChild(img);
   btn.addEventListener('click', pickProjectFolder);
   toolbar.appendChild(btn);
@@ -1174,7 +1170,7 @@ async function loadProjectFile(){
   projectDom.classList.add('folder');
   projectDom.classList.add('expanded');
   const projectImg = document.createElement('img');
-  projectImg.src = getFileIcon('folder');
+  setFileIcon(projectImg, 'folder');
   const projectText = document.createElement('span');
   function dirname(p) {
     p = p.replace(/\\/g, '/');
@@ -1315,7 +1311,7 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer, isDirectory) {
         el.appendChild(expand);
       }
       const img = document.createElement('img');
-      img.src = getFileIcon(isFile ? getFileType(child) : 'folder');
+      setFileIcon(img, isFile ? getFileType(child) : 'folder');
       const text = document.createElement('span');
       text.innerText = child.name;
       el.appendChild(img);
@@ -1723,7 +1719,7 @@ function renderTabs() {
     const el = document.createElement('div');
     el.className = 'tab' + (t.id === activeTabId ? ' active' : '');
     const img = document.createElement('img');
-    img.src = getFileIcon(tabIconType(t));
+    setFileIcon(img, tabIconType(t));
     const span = document.createElement('span');
     span.textContent = t.name;
     span.title = t.path || t.name;
@@ -1826,7 +1822,55 @@ const LSP_SEMANTIC_TYPE = {
   operator: 'operator', decorator: 'decorator',
 };
 
-// VS Code Dark+ 风格的语义配色主题（语义 token 的颜色完全由这里的规则决定）
+// ---------------------------------------------------------------------------
+// 外观设置：主题、字号、括号行为。由设置窗口保存，主窗口读取并即时应用。
+// ---------------------------------------------------------------------------
+let appSettings = {};
+let appTheme = 'dark';
+
+function clampFontSize(v) {
+  const n = Number(v);
+  if (Number.isFinite(n) && n >= 8 && n <= 40) return Math.round(n);
+  return 14;
+}
+
+// 应用配色主题：Monaco 主题（全局 API，不依赖 editor 实例）+ 应用界面深浅色。
+// monaco 尚未加载时只切换界面主题，编辑器创建后再应用 Monaco 主题。
+function applyAppTheme(theme) {
+  appTheme = theme === 'light' ? 'light' : 'dark';
+  document.body.classList.toggle('theme-light', appTheme === 'light');
+  applyThemeToIcons();
+  if (typeof monaco !== 'undefined' && monaco.editor) {
+    monaco.editor.setTheme(appTheme === 'light' ? 'cppeditor-light' : 'cppeditor-dark');
+  }
+}
+
+// 依据当前主题切换图标的深色 / 浅色版本（由 data-dark-src / data-light-src 指定）
+function applyThemeToIcons() {
+  const light = appTheme === 'light';
+  document.querySelectorAll('img[data-light-src]').forEach((img) => {
+    img.src = light ? img.dataset.lightSrc : img.dataset.darkSrc;
+  });
+}
+
+// 把保存的外观设置应用到编辑器；editor 未创建时只记录主题，创建后由调用方补全
+function applyEditorSettings() {
+  const e = appSettings.editor || {};
+  applyAppTheme(e.theme);
+  const treeEl = document.getElementById('filetree');
+  if (treeEl) treeEl.style.fontSize = clampFontSize(e.fileTreeFontSize) + 'px';
+  if (!editor) return;
+  editor.updateOptions({
+    fontSize: clampFontSize(e.fontSize),
+    autoClosingBrackets: e.autoClosingBrackets === false ? 'never' : 'languageDefined',
+    autoClosingQuotes: e.autoClosingQuotes === false ? 'never' : 'languageDefined',
+    bracketPairColorization: { enabled: e.bracketPairColorization !== false },
+    matchBrackets: e.matchBrackets === false ? 'never' : 'always',
+    autoIndent: e.autoIndent === false ? 'none' : 'full',
+  });
+}
+
+// VS Code Dark+ / Light+ 风格的语义配色主题（语义 token 的颜色完全由这里的规则决定）
 function installSemanticTheme() {
   monaco.editor.defineTheme('cppeditor-dark', {
     base: 'vs-dark',
@@ -1862,7 +1906,50 @@ function installSemanticTheme() {
     ],
     colors: {},
   });
-  monaco.editor.setTheme('cppeditor-dark');
+
+  monaco.editor.defineTheme('cppeditor-light', {
+    base: 'vs',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '008000', fontStyle: 'italic' },
+      { token: 'keyword', foreground: '0000E0' },
+      { token: 'string', foreground: 'B80000' },
+      { token: 'number', foreground: 'B25E00' },
+      { token: 'regexp', foreground: 'A3157E' },
+      { token: 'operator', foreground: '5E35B1' },
+      { token: 'namespace', foreground: '0B7285' },
+      { token: 'type', foreground: '0B7285' },
+      { token: 'struct', foreground: '0B7285' },
+      { token: 'class', foreground: '0B7285' },
+      { token: 'interface', foreground: '0B7285' },
+      { token: 'enum', foreground: '0B7285' },
+      { token: 'typeParameter', foreground: '0055AA' },
+      { token: 'function', foreground: 'B45309' },
+      { token: 'member', foreground: 'B45309' },
+      { token: 'macro', foreground: 'C2185B' },
+      { token: 'variable', foreground: '0052CC' },
+      { token: 'parameter', foreground: '0052CC' },
+      { token: 'property', foreground: 'B4004E' },
+      { token: 'enumMember', foreground: '008A00' },
+      { token: 'event', foreground: 'C2185B' },
+      { token: 'decorator', foreground: '7B1FA2' },
+      // 常见修饰符组合：确保语义 token 带修饰符时仍命中鲜明颜色，而不是回落 base
+      { token: 'variable.readonly', foreground: '0052CC' },
+      { token: 'variable.declaration', foreground: '0052CC' },
+      { token: 'variable.defaultLibrary', foreground: '0052CC' },
+      { token: 'parameter.readonly', foreground: '0052CC' },
+      { token: 'parameter.declaration', foreground: '0052CC' },
+      { token: 'property.readonly', foreground: 'B4004E' },
+      // 已弃用 → 删除线
+      { token: 'type.deprecated', fontStyle: 'strikethrough' },
+      { token: 'function.deprecated', fontStyle: 'strikethrough' },
+      { token: 'member.deprecated', fontStyle: 'strikethrough' },
+      { token: 'variable.deprecated', fontStyle: 'strikethrough' },
+    ],
+    colors: {},
+  });
+
+  applyAppTheme(appSettings.editor && appSettings.editor.theme);
 }
 
 // 把 clangd 的 LSP 语义 token 数据（按 clangd 的 legend 索引编码）转换成
@@ -1953,9 +2040,18 @@ function registerSemanticHighlighting() {
 async function startEditor() {
   window.__cppeditor.stage = 'monaco-loaded';
 
+  // 读取保存的外观设置，创建编辑器时直接采用（避免先以默认外观显示再切换）
+  try {
+    const s = await window.editorAPI.loadSettings();
+    if (s && s.editor) appSettings = s;
+  } catch {
+    /* 无设置时使用默认外观 */
+  }
+  installSemanticTheme();
+
   editor = monaco.editor.create(document.getElementById('editor'), {
-    theme: 'vs-dark',
-    fontSize: 14,
+    theme: appTheme === 'light' ? 'cppeditor-light' : 'cppeditor-dark',
+    fontSize: clampFontSize(appSettings.editor && appSettings.editor.fontSize),
     fontFamily: 'Cascadia Code, Consolas, "Courier New", monospace',
     automaticLayout: true,
     tabSize: 4,
@@ -1979,6 +2075,9 @@ async function startEditor() {
     // 启用语义高亮（默认由主题决定，Monaco 内置主题默认关闭）
     'semanticHighlighting.enabled': true,
   });
+
+  // 编辑器已创建，应用全部外观设置（字号、括号行为等）
+  applyEditorSettings();
 
   editor.onDidChangeModelContent(() => {
     const t = activeTab();
@@ -2141,6 +2240,12 @@ function init() {
     if (filePath) openFileTab(filePath);
   });
 
+  // 设置窗口保存后即时应用外观（主题、字号、括号行为）
+  window.editorAPI.onSettingsChanged((s) => {
+    if (s && s.editor) appSettings = s;
+    applyEditorSettings();
+  });
+
   // 项目目录文件增删：通知 clangd 重新索引（compile_commands.json 已在主进程重建）
   window.editorAPI.onProjectChanged((info) => {
     updateFileTree(info);
@@ -2201,6 +2306,23 @@ function init() {
   require.config({ paths: { vs: 'editor://app/vs' } });
   require(['vs/editor/editor.main'], () => startEditor());
 }
+
+// 尽早读取设置应用主题：body 与图标此时已可访问，monaco 未加载则由 guard 兜底。
+// 主进程在 URL 中带 theme 参数，可同步应用，避免浅色主题下先闪深色再切换。
+(function prefetchAppSettings() {
+  const themeFromUrl = new URLSearchParams(location.search).get('theme');
+  if (themeFromUrl === 'light' || themeFromUrl === 'dark') {
+    appSettings = { editor: { theme: themeFromUrl } };
+    applyAppTheme(themeFromUrl);
+  }
+  if (!window.editorAPI) return;
+  window.editorAPI.loadSettings()
+    .then((s) => {
+      if (s && s.editor) appSettings = s;
+      applyAppTheme(s && s.editor && s.editor.theme);
+    })
+    .catch(() => {});
+})();
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
