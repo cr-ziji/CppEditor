@@ -47,8 +47,9 @@ contextBridge.exposeInMainWorld('editorAPI', {
   // 将文本写回项目目录内的指定文件；返回 { ok, path }。
   saveFile: (filePath, content) => ipcRenderer.invoke('file:save', filePath, content),
 
-  // 将编辑器全文保存到「保存目录/main.cpp」；返回 { ok, path } 或 { ok:false, cancelled:true }。
-  save: (content) => ipcRenderer.invoke('save:save', content),
+  // 弹出「另存为」对话框保存新文件（自选目录与文件名，默认目录为项目根、
+  // 默认文件名为「未命名」）；返回 { ok, path, projectDir } 或 { ok:false, cancelled:true }。
+  saveAs: (content, suggestedName) => ipcRenderer.invoke('save:save-as', content, suggestedName),
 
   // 读取上次保存的文件内容（用于启动时恢复）；返回 { ok, path, content } 或 { ok:false }。
   getSaved: () => ipcRenderer.invoke('save:get-saved'),

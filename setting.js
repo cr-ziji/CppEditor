@@ -21,11 +21,8 @@
             fontSize: 14,
             fileTreeFontSize: 14,
             theme: 'dark',
-            autoClosingBrackets: true,
-            autoClosingQuotes: true,
-            bracketPairColorization: true,
-            matchBrackets: true,
             autoIndent: true,
+            autoMatchBrackets: true,
         },
         compile: {
             compilerCommand: '',
@@ -39,18 +36,9 @@
             c: '',
             header: '#ifndef C_$FILE_NAME$_H\n#define C_$FILE_NAME$_H\n$cursor$\n#endif',
         },
-        shortcuts: {
-            newFile: 'Ctrl+N',
-            saveFile: 'Ctrl+S',
-            compileRun: 'F5',
-            jumpToDefinition: 'Ctrl+单击',
-            findText: 'Ctrl+F',
-            nextTab: 'Ctrl+Tab',
-            closeTab: 'Ctrl+W',
-        },
     };
 
-    // 输入控件 id → 设置路径（分组、键名）映射
+    // 输入控件 id → 设置路径（分组、键名）映射（快捷键页为只读预览，不在其中）
     const FIELD_MAP = [
         ['compileCommand', 'compile', 'compilerCommand'],
         ['linkCommand', 'compile', 'linkerCommand'],
@@ -60,21 +48,11 @@
         ['fontSize', 'editor', 'fontSize'],
         ['fileTreeFontSize', 'editor', 'fileTreeFontSize'],
         ['themeMode', 'editor', 'theme'],
-        ['autoClosingBrackets', 'editor', 'autoClosingBrackets'],
-        ['autoClosingQuotes', 'editor', 'autoClosingQuotes'],
-        ['bracketPairColorization', 'editor', 'bracketPairColorization'],
-        ['matchBrackets', 'editor', 'matchBrackets'],
         ['autoIndent', 'editor', 'autoIndent'],
+        ['autoMatchBrackets', 'editor', 'autoMatchBrackets'],
         ['templateCpp', 'templates', 'cpp'],
         ['templateC', 'templates', 'c'],
         ['templateHeader', 'templates', 'header'],
-        ['shortcutNewFile', 'shortcuts', 'newFile'],
-        ['shortcutSaveFile', 'shortcuts', 'saveFile'],
-        ['shortcutCompileRun', 'shortcuts', 'compileRun'],
-        ['shortcutJumpDefinition', 'shortcuts', 'jumpToDefinition'],
-        ['shortcutFindText', 'shortcuts', 'findText'],
-        ['shortcutNextTab', 'shortcuts', 'nextTab'],
-        ['shortcutCloseTab', 'shortcuts', 'closeTab'],
     ];
 
     let settings = {};
@@ -106,13 +84,18 @@
         }
     }
 
-    // 从表单收集设置并持久化
+    // 从表单收集设置并持久化：按 FIELD_MAP 重建受管分组（废弃字段随之丢弃），
+    // 其它分组（如旧版 shortcuts 记录）原样保留。
     function collectAndSave() {
+        const cleaned = {};
         for (const [id, group, key] of FIELD_MAP) {
-            if (!settings[group]) settings[group] = {};
-            settings[group][key] = fieldValue(getField(id));
+            if (!cleaned[group]) cleaned[group] = {};
+            cleaned[group][key] = fieldValue(getField(id));
         }
-        window.editorAPI.saveSettings(settings);
+        for (const group of Object.keys(settings)) {
+            if (!cleaned[group]) cleaned[group] = settings[group];
+        }
+        window.editorAPI.saveSettings(cleaned);
     }
 
     // 设置窗口自身随主题切换深浅色，并切换浅色版图标

@@ -68,19 +68,10 @@
                 <div class="group">
                     <div class="group-heading">括号匹配</div>
                     <div class="row check">
-                        <label><input type="checkbox" id="autoClosingBrackets"> 自动补全括号</label>
-                    </div>
-                    <div class="row check">
-                        <label><input type="checkbox" id="autoClosingQuotes"> 自动补全引号</label>
-                    </div>
-                    <div class="row check">
-                        <label><input type="checkbox" id="bracketPairColorization"> 括号对颜色化</label>
-                    </div>
-                    <div class="row check">
-                        <label><input type="checkbox" id="matchBrackets"> 括号匹配高亮</label>
-                    </div>
-                    <div class="row check">
                         <label><input type="checkbox" id="autoIndent"> 输入时自动缩进</label>
+                    </div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="autoMatchBrackets"> 括号自动匹配</label>
                     </div>
                 </div>
             </section>
@@ -156,37 +147,28 @@
 
             <section class="settings-panel" data-panel="shortcuts">
                 <h2 class="panel-heading">快捷键</h2>
-                <p class="panel-sub">常用的基础操作快捷键（当前仅记录，尚未生效）</p>
+                <p class="panel-sub">快捷键一览（不可修改）</p>
 
                 <div class="group">
-                    <div class="row">
-                        <label class="label" for="shortcutNewFile">新建文件</label>
-                        <input type="text" id="shortcutNewFile">
-                    </div>
-                    <div class="row">
-                        <label class="label" for="shortcutSaveFile">保存文件</label>
-                        <input type="text" id="shortcutSaveFile">
-                    </div>
-                    <div class="row">
-                        <label class="label" for="shortcutCompileRun">编译并运行</label>
-                        <input type="text" id="shortcutCompileRun">
-                    </div>
-                    <div class="row">
-                        <label class="label" for="shortcutJumpDefinition">跳转到定义</label>
-                        <input type="text" id="shortcutJumpDefinition">
-                    </div>
-                    <div class="row">
-                        <label class="label" for="shortcutFindText">查找文本</label>
-                        <input type="text" id="shortcutFindText">
-                    </div>
-                    <div class="row">
-                        <label class="label" for="shortcutNextTab">下一个标签页</label>
-                        <input type="text" id="shortcutNextTab">
-                    </div>
-                    <div class="row">
-                        <label class="label" for="shortcutCloseTab">关闭标签页</label>
-                        <input type="text" id="shortcutCloseTab">
-                    </div>
+                    <div class="group-heading">编辑器</div>
+                    <div class="shortcut-row"><span class="shortcut-desc">新建未命名文件</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">N</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">保存文件</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">S</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">F</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">替换</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">R</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">关闭当前标签页</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">W</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">重启语言服务器 (LSP)</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">R</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找下一个匹配</span><span class="shortcut-keys"><span class="kbd">F3</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找上一个匹配</span><span class="shortcut-keys"><span class="kbd">Shift</span>+<span class="kbd">F3</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">跳转到定义（点在定义上时列出引用）</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">左键</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找栏：下一个匹配 / 上一个匹配</span><span class="shortcut-keys"><span class="kbd">Enter</span> / <span class="kbd">Shift</span>+<span class="kbd">Enter</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">替换栏：替换当前 / 全部替换</span><span class="shortcut-keys"><span class="kbd">Enter</span> / <span class="kbd">Shift</span>+<span class="kbd">Enter</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">关闭查找栏 / 引用面板 / 右键菜单</span><span class="shortcut-keys"><span class="kbd">Esc</span></span></div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">文件树（聚焦文件树时生效）</div>
+                    <div class="shortcut-row"><span class="shortcut-desc">删除选中项（移入回收站）</span><span class="shortcut-keys"><span class="kbd">Delete</span></span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">复制 / 剪切 / 粘贴</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">C</span> / <span class="kbd">X</span> / <span class="kbd">V</span></span></div>
                 </div>
             </section>
         </div>

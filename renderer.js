@@ -397,7 +397,8 @@ function hideBuildOutput() {
 
 // 保存当前激活标签页：
 //  - 已有路径（从项目树打开）：写回该文件
-//  - 未命名标签页：先选择保存目录，写入 main.cpp，再绑定路径
+//  - 未命名标签页：弹出「另存为」对话框自选目录与文件名（默认目录为项目根、
+//    默认文件名「未命名」），保存后绑定路径
 async function saveFile() {
   if (!editor || shutdown) return;
   const tab = activeTab();
@@ -408,7 +409,7 @@ async function saveFile() {
   }
   try {
     if (!tab.path) {
-      const result = await window.editorAPI.save(tab.model.getValue());
+      const result = await window.editorAPI.saveAs(tab.model.getValue(), '未命名');
       if (!result || result.cancelled) return;
       if (!result.ok) {
         showSaveStatus(result.message || '保存失败', true);
@@ -416,7 +417,7 @@ async function saveFile() {
       }
       tab.path = result.path;
       tab.name = basename(tab.path);
-      tab.savedContent = content;
+      tab.savedContent = tab.model.getValue();
       tab.dirty = false;
       applyProjectDir(result.projectDir || pathDirOf(result.path), result.path);
       // 让 model 的 URI 跟随真实路径，clangd 才能对同一 URI 工作
@@ -2607,6 +2608,31 @@ function currentTextDoc() {
   return { uri, languageId: t.model.getLanguageId(), text: t.model.getValue() };
 }
 
+// Ctrl+N：新建未命名标签页（无扩展名，纯文本）。
+// 首次 Ctrl+S 保存时走 saveFile 的「无路径」分支：弹出选择保存位置对话框。
+function newUntitledTab() {
+  if (!editor) return;
+  const tab = {
+    id: ++tabSeq,
+    path: null,
+    name: '未命名',
+    kind: 'text',
+    dirty: false,
+    restoring: false,
+    savedContent: '',
+    model: monaco.editor.createModel(
+      '',
+      'plaintext',
+      monaco.Uri.parse('untitled://untitled-' + tabSeq)
+    ),
+  };
+  tabs.push(tab);
+  renderTabs();
+  activateTab(tab);
+  editor.focus();
+  showSaveStatus('未命名文件：Ctrl+S 保存并选择保存位置');
+}
+
 // 打开文件（项目树点击 / 启动恢复）。同一文件只保留一个标签页。
 async function openFileTab(path, opts) {
   opts = opts || {};
@@ -2992,12 +3018,14 @@ function applyEditorSettings() {
   const treeEl = document.getElementById('filetree');
   if (treeEl) treeEl.style.fontSize = clampFontSize(e.fileTreeFontSize) + 'px';
   if (!editor) return;
+  // 括号匹配行为只有一个总开关：自动匹配所有括号（大括号 / 小括号 / 尖括号 / 中括号 / 单引号 / 双引号）
+  const autoMatch = e.autoMatchBrackets !== false;
   editor.updateOptions({
     fontSize: clampFontSize(e.fontSize),
-    autoClosingBrackets: e.autoClosingBrackets === false ? 'never' : 'languageDefined',
-    autoClosingQuotes: e.autoClosingQuotes === false ? 'never' : 'languageDefined',
-    bracketPairColorization: { enabled: e.bracketPairColorization !== false },
-    matchBrackets: e.matchBrackets === false ? 'never' : 'always',
+    autoClosingBrackets: autoMatch ? 'languageDefined' : 'never',
+    autoClosingQuotes: autoMatch ? 'languageDefined' : 'never',
+    bracketPairColorization: { enabled: true },
+    matchBrackets: 'always',
     autoIndent: e.autoIndent === false ? 'none' : 'full',
   });
 }
@@ -3190,7 +3218,7 @@ async function startEditor() {
     insertSpaces: true,
     // 自动缩进
     autoIndent: 'full',
-    // 括号补全
+    // 括号补全（总开关关闭时由 applyEditorSettings 覆盖为 never）
     autoClosingBrackets: 'languageDefined',
     autoClosingQuotes: 'languageDefined',
     formatOnType: true,
@@ -3526,6 +3554,12 @@ function init() {
     if (e.key === 'Escape') {
       if (document.getElementById('tree-input').style.display !== 'none') hideTreeInput();
       else hideTreeMenu();
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N')) {
+      // Ctrl+N：新建未命名文件（无扩展名；首次 Ctrl+S 时选择保存位置）
+      e.preventDefault();
+      newUntitledTab();
+      return;
     }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === 's') {
       e.preventDefault();

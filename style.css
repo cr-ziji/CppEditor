@@ -879,6 +879,41 @@ body.resizing #resizer{
     transition: border-color .15s;
 }
 
+/* 快捷键只读预览列表（设置窗口）：操作说明 | 按键 */
+.shortcut-row{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 13px;
+}
+
+.shortcut-row .shortcut-desc{
+    color: #cccccc;
+}
+
+.shortcut-keys{
+    flex-shrink: 0;
+    color: #cccccc;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.shortcut-keys .kbd{
+    display: inline-block;
+    min-width: 20px;
+    text-align: center;
+    padding: 2px 7px;
+    font-size: 12px;
+    font-family: Consolas, 'Courier New', monospace;
+    color: #e8e8e8;
+    background: #3c3c3c;
+    border: 1px solid #4d4d4d;
+    border-radius: 4px;
+}
+
 .group .row input:focus,
 .group .row select:focus,
 .group .row textarea:focus{
@@ -1328,6 +1363,17 @@ html.theme-light body .group-heading{
 html.theme-light body .group .row .label,
 html.theme-light body .group .row.check label{
     color: #333333;
+}
+
+html.theme-light body .shortcut-row .shortcut-desc,
+html.theme-light body .shortcut-keys{
+    color: #333333;
+}
+
+html.theme-light body .shortcut-keys .kbd{
+    color: #222222;
+    background: #f0f0f0;
+    border-color: #d0d0d0;
 }
 
 html.theme-light body .group .row input[type="text"],

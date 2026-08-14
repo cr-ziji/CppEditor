@@ -657,6 +657,12 @@ function setupSettingsIpc() {
           appSettings[key] = { ...(appSettings[key] || {}), ...patch[key] };
         }
       }
+      // 括号匹配设置已精简为单一 autoMatchBrackets 总开关：清理废弃的旧字段
+      if (appSettings.editor && typeof appSettings.editor === 'object') {
+        for (const k of ['autoClosingBrackets', 'autoClosingQuotes', 'bracketPairColorization', 'matchBrackets']) {
+          delete appSettings.editor[k];
+        }
+      }
       persistSettings();
       // 编译相关设置变化：
       // - 有项目：重建 compile_commands.json。clangd 会自行监控该文件变化并重载索引，
@@ -718,26 +724,39 @@ function setupSaveIpc() {
     }
   });
 
-  // 渲染进程 Ctrl+S：把编辑器全文写入当前保存路径
-  ipcMain.handle('save:save', async (_event, content) => {
+  // 渲染进程 Ctrl+S（未命名标签页首次保存）：弹出「另存为」对话框自选目录与文件名。
+  // 默认目录为项目根目录（未设置项目时用文档目录），默认文件名为「未命名」。
+  ipcMain.handle('save:save-as', async (_event, content, suggestedName) => {
     if (typeof content !== 'string') {
       return { ok: false, message: '要保存的内容无效' };
     }
-    if (!projectPath) {
-      const chosen = await chooseSaveDirectory();
-      if (!chosen) return { ok: false, cancelled: true };
-      projectPath = chosen;
-    }
+    const win = BrowserWindow.getAllWindows()[0];
+    const defaultDir = projectPath || app.getPath('documents');
+    const defaultName = (typeof suggestedName === 'string' && suggestedName.trim())
+      ? suggestedName.trim()
+      : '未命名';
+    const result = await dialog.showSaveDialog(win, {
+      title: '保存新文件',
+      defaultPath: path.join(defaultDir, defaultName),
+      buttonLabel: '保存',
+      filters: [
+        { name: 'C/C++ 源文件', extensions: ['cpp', 'cc', 'cxx', 'c'] },
+        { name: '头文件', extensions: ['h', 'hpp', 'hh'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
     try {
-      fs.writeFileSync(path.join(projectPath, 'main.cpp'), content, 'utf8');
-      updateSnapshotEntry(path.join(projectPath, 'main.cpp'));
-      writeCompileCommands(projectPath);
-      persistSettings();
-      watchProject();
+      fs.writeFileSync(result.filePath, content, 'utf8');
+      updateSnapshotEntry(result.filePath);
+      // 保存到项目目录内时重建编译数据库（若缺省），供 clangd 索引
+      if (projectPath && isWithin(projectPath, result.filePath)) {
+        writeCompileCommands(projectPath);
+      }
       return {
         ok: true,
-        path: path.join(projectPath, 'main.cpp'),
-        projectDir: projectPath,
+        path: result.filePath,
+        projectDir: projectPath || path.dirname(result.filePath),
       };
     } catch (err) {
       return { ok: false, message: '保存失败: ' + err.message };
