@@ -690,6 +690,33 @@ function scheduleChange() {
   changeTimer = setTimeout(syncNow, 150);
 }
 
+// 依据当前活动模型上已发布的 clangd 诊断，重新刷新底部错误/警告计数。
+// 关闭/切换文件后 clangd 不一定会重新推送诊断，直接统计现存 markers，
+// 避免旧文件的计数残留。
+function refreshDiagFromActiveModel() {
+  const model = editor && editor.getModel();
+  if (!model) {
+    setDiagCounts(0, 0);
+    window.__cppeditor.diagnostics = { errors: 0, warnings: 0, total: 0 };
+    return;
+  }
+  let errors = 0;
+  let warnings = 0;
+  let total = 0;
+  try {
+    const markers = monaco.editor.getModelMarkers({ resource: model.uri, owner: 'clangd' });
+    total = markers.length;
+    for (const m of markers) {
+      if (m.severity === monaco.MarkerSeverity.Error) errors += 1;
+      else if (m.severity === monaco.MarkerSeverity.Warning) warnings += 1;
+    }
+  } catch {
+    /* ignore */
+  }
+  setDiagCounts(errors, warnings);
+  window.__cppeditor.diagnostics = { errors, warnings, total };
+}
+
 function handleDiagnostics(params) {
   const doc = currentTextDoc();
   if (!params || !doc || !doc.uri || normalizeUri(params.uri) !== normalizeUri(doc.uri) || !isCppLang(doc.languageId)) return;
@@ -2125,6 +2152,7 @@ function activateTab(tab) {
   renderTabs();
   updateFileLabel();
   syncActiveDoc(prev);
+  refreshDiagFromActiveModel();
 }
 
 // 以磁盘当前内容重建标签页（外部修改时保持与磁盘同步）。
@@ -2270,6 +2298,7 @@ function closeTab(id) {
       renderTabs();
       updateFileLabel();
     }
+    refreshDiagFromActiveModel();
   } else {
     renderTabs();
   }
@@ -2694,8 +2723,10 @@ function initHeader(){
       return;
     }
     if (result && result.ok) {
-      // 有警告：展示在底部面板（不影响运行）
+      // 有警告：展示在底部面板（不影响运行）；无警告则收起旧面板，
+      // 避免上次编译的警告/错误残留
       if (result.output) showBuildOutput('warning', result.output);
+      else hideBuildOutput();
       showSaveStatus('已启动: ' + basename(result.exePath || t.path));
     } else {
       const msg = (result && result.message) || '编译失败';
