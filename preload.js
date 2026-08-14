@@ -59,6 +59,23 @@ contextBridge.exposeInMainWorld('editorAPI', {
   // 编译并运行 .c/.cpp 文件；返回 { ok, exePath, message } 或 { ok:false, message }。
   runFile: (filePath) => ipcRenderer.invoke('run:compile-and-run', filePath),
 
+  // 文件树操作。剪贴板使用 CF_HDROP（FileNameW），与 Windows 资源管理器互通。
+  // 复制/剪切：将文件列表写入剪贴板；返回 { ok, count } 或 { ok:false, message }。
+  treeCopy: (paths) => ipcRenderer.invoke('filetree:copy', paths),
+  treeCut: (paths) => ipcRenderer.invoke('filetree:cut', paths),
+  // 粘贴到 destDir；返回 { ok, results:[{ src, dest, isDirectory, ok, message }] }。
+  treePaste: (destDir) => ipcRenderer.invoke('filetree:paste', destDir),
+  // 重命名；返回 { ok, oldPath, newPath, isDirectory } 或 { ok:false, message }。
+  treeRename: (oldPath, newName) => ipcRenderer.invoke('filetree:rename', oldPath, newName),
+  // 删除（移入回收站）；返回 { ok, results }。
+  treeDelete: (paths) => ipcRenderer.invoke('filetree:delete', paths),
+  // 在资源管理器中定位；返回 { ok }。
+  treeReveal: (filePath) => ipcRenderer.invoke('filetree:reveal', filePath),
+  // 在 dir 下新建文件（内容由渲染端按模板替换）；返回 { ok, path } 或 { ok:false, message }。
+  treeCreateFile: (dir, name, content) => ipcRenderer.invoke('filetree:create-file', dir, name, content),
+  // 在 dir 下新建文件夹；返回 { ok, path } 或 { ok:false, message }。
+  treeCreateDir: (dir, name) => ipcRenderer.invoke('filetree:create-dir', dir, name),
+
   // 订阅项目目录文件增删事件（{ projectDir, added, removed }）。返回取消订阅函数。
   onProjectChanged: (callback) => {
     const listener = (_event, info) => callback(info);

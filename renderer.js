@@ -1073,13 +1073,15 @@ function tabIconType(t) {
 }
 
 function expandFolder(node){
+  const ch = childrenContainerOf(node);
+  if (!ch) return;
   if (node.classList.contains('expanded')){
     node.classList.remove('expanded');
-    node.querySelectorAll(':scope > div.children')[0].style.display = 'none';
+    ch.style.display = 'none';
   }
   else{
     node.classList.add('expanded');
-    node.querySelectorAll(':scope > div.children')[0].style.display = 'block';
+    ch.style.display = 'block';
   }
 }
 
@@ -1090,30 +1092,449 @@ function rendererFileTree(paths, faNode) {
       const nodeExpand = document.createElement('div');
       nodeExpand.innerText = '>';
       nodeExpand.classList.add('expand');
-      nodeExpand.addEventListener('click', () => expandFolder(node))
+      nodeExpand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(node); });
       node.appendChild(nodeExpand);
       node.classList.add('folder');
+      node.addEventListener('click', (e) => {
+        // 阻止冒泡到父级文件夹（否则会误触发父级选中）
+        e.stopPropagation();
+        if (treeMenuVisible()) { hideTreeMenu(); return; }
+        if (e.ctrlKey || e.metaKey) { e.preventDefault(); toggleTreeSelection(path); return; }
+        // 仅点三角展开/折叠，点文件夹本身只选中
+        setTreeSelection([path.path]);
+      });
     }
     else {
       node.classList.add('file');
-      node.addEventListener('click', () => openFileTab(path.path));
+      node.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (treeMenuVisible()) { hideTreeMenu(); return; }
+        if (e.ctrlKey || e.metaKey) { e.preventDefault(); toggleTreeSelection(path); return; }
+        setTreeSelection([path.path]);
+        openFileTab(path.path);
+      });
     }
+    node.dataset.path = path.path;
+    node.dataset.type = path.type;
+    node.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTreeMenu(e, path);
+    });
     const nodeImg = document.createElement('img');
     setFileIcon(nodeImg, getFileType(path));
     const nodeText = document.createElement('span');
     nodeText.innerText = path.name;
     node.appendChild(nodeImg);
     node.appendChild(nodeText);
+    faNode.appendChild(node);
     if (path.type === 'directory') {
       const nodeChildren = document.createElement('div');
       nodeChildren.classList.add('children');
       nodeChildren.style.display = 'none';
       rendererFileTree(path.children, nodeChildren);
-      node.appendChild(nodeChildren);
+      node.insertAdjacentElement('afterend', nodeChildren);
     }
-    faNode.appendChild(node);
     path.node = node;
   })
+}
+
+// ---------------------------------------------------------------------------
+// 5a2. 文件树多选 / 右键菜单 / 剪贴板操作
+//     Ctrl+单击多选文件与文件夹；右键弹出菜单；Ctrl+C/V/X 与右键菜单等效。
+//     剪贴板文件走主进程 CF_HDROP（FileNameW），与 Windows 资源管理器互通。
+// ---------------------------------------------------------------------------
+const selectedTreePaths = new Set();
+let fileTreeFocused = false;
+let treeInputOnOk = null;
+
+function normalizeTreeKey(p) {
+  return (p || '').replace(/\\/g, '/');
+}
+
+function setTreeSelection(paths) {
+  selectedTreePaths.clear();
+  for (const p of paths) selectedTreePaths.add(normalizeTreeKey(p));
+  applyTreeSelection();
+}
+
+function clearTreeSelection() {
+  setTreeSelection([]);
+}
+
+function toggleTreeSelection(treeNode) {
+  const key = normalizeTreeKey(treeNode && treeNode.path);
+  if (!key) return;
+  if (selectedTreePaths.has(key)) selectedTreePaths.delete(key);
+  else selectedTreePaths.add(key);
+  applyTreeSelection();
+}
+
+function applyTreeSelection() {
+  if (!projectDom) return;
+  // children 是 projectDom 的兄弟节点，需从父容器整树查找（querySelectorAll 含 projectDom 自身）
+  const container = projectDom.parentElement;
+  if (!container) return;
+  const all = container.querySelectorAll('.file, .folder');
+  for (const el of all) {
+    const p = el.dataset && el.dataset.path;
+    el.classList.toggle('selected', !!p && selectedTreePaths.has(normalizeTreeKey(p)));
+  }
+}
+
+// 右键菜单当前是否可见（点击树节点时若可见则只关闭菜单，不触发选中）
+function treeMenuVisible() {
+  const m = document.getElementById('tree-menu');
+  return !!(m && m.style.display !== 'none');
+}
+
+// 返回某文件夹节点的 children 容器（children 是 folder 的兄弟节点）
+function childrenContainerOf(el) {
+  if (!el) return null;
+  const sib = el.nextElementSibling;
+  return sib && sib.classList && sib.classList.contains('children') ? sib : null;
+}
+
+function treeNodeIsDirectory(p) {
+  if (!p) return false;
+  const key = normalizeTreeKey(p);
+  if (key === normalizeTreeKey(projectDir || '')) return true;
+  const n = findTreeNode(projectFileTree, key);
+  return !!n && n.type === 'directory';
+}
+
+// 粘贴目标目录：优先选中的文件夹；其次选中文件的父目录；最后项目根
+function pasteTargetDir() {
+  const dirs = [...selectedTreePaths].filter((p) => treeNodeIsDirectory(p));
+  if (dirs.length) return dirs[0];
+  for (const p of selectedTreePaths) {
+    const i = p.lastIndexOf('/');
+    if (i > 0) return p.slice(0, i);
+  }
+  return projectDir ? projectDir.replace(/\\/g, '/') : null;
+}
+
+function treeRootContainer() {
+  return projectDom ? childrenContainerOf(projectDom) : null;
+}
+
+// 操作后立即同步树（watcher 轮询 1s 后会再次校正，幂等安全）
+function treeAddPath(p, isDir) {
+  if (!projectFileTree || !projectDom) return;
+  const c = treeRootContainer();
+  if (c) insertFilePath(projectDir, projectFileTree, p, c, !!isDir);
+}
+
+function treeRemovePath(p) {
+  if (!projectFileTree || !projectDom) return;
+  const c = treeRootContainer();
+  if (c) removeFilePath(projectFileTree, p, c);
+}
+
+// 可执行剪切/删除/复制/重命名的操作列表（排除项目根自身）
+function treeOpList() {
+  const rootKey = normalizeTreeKey(projectDir || '');
+  return [...selectedTreePaths].filter((p) => normalizeTreeKey(p) !== rootKey);
+}
+
+async function copySelected() {
+  const list = [...selectedTreePaths];
+  if (!list.length) return;
+  const r = await window.editorAPI.treeCopy(list);
+  if (r && r.ok) showSaveStatus('已复制 ' + r.count + ' 项');
+  else showSaveStatus('复制失败: ' + ((r && r.message) || ''), true);
+}
+
+async function cutSelected() {
+  const list = treeOpList();
+  if (!list.length) return;
+  const r = await window.editorAPI.treeCut(list);
+  if (r && r.ok) showSaveStatus('已剪切 ' + r.count + ' 项');
+  else showSaveStatus('剪切失败: ' + ((r && r.message) || ''), true);
+}
+
+async function pasteToDir(dir) {
+  if (!dir) return;
+  const r = await window.editorAPI.treePaste(dir);
+  if (!r || !r.ok) {
+    showSaveStatus('粘贴失败: ' + ((r && r.message) || ''), true);
+    return;
+  }
+  let n = 0;
+  for (const res of r.results || []) {
+    if (!res.ok) continue;
+    n++;
+    if (res.dest) treeAddPath(res.dest, !!res.isDirectory);
+    // 剪切（移动）才移除源并关闭其标签；复制保留源
+    if (res.moved && res.src) {
+      treeRemovePath(res.src);
+      if (res.src !== res.dest) {
+        const tab = findTabByPath(res.src);
+        if (tab) closeTab(tab.id);
+      }
+    }
+  }
+  showSaveStatus('已粘贴 ' + n + ' 项');
+}
+
+async function deleteSelectedTreePaths() {
+  const list = treeOpList();
+  if (!list.length) return;
+  const ok = window.confirm('确定删除选中的 ' + list.length + ' 项吗？此操作将移入回收站。');
+  if (!ok) return;
+  const r = await window.editorAPI.treeDelete(list);
+  if (!r) return;
+  let okCount = 0;
+  for (const res of r.results || []) {
+    if (!res.ok) continue;
+    okCount++;
+    treeRemovePath(res.path);
+    const tab = findTabByPath(res.path);
+    if (tab) closeTab(tab.id);
+  }
+  if (r.ok) showSaveStatus('已删除 ' + okCount + ' 项');
+  else showSaveStatus('部分项目删除失败', true);
+  clearTreeSelection();
+}
+
+function askRename(p) {
+  const name = basename(p);
+  showTreeInput('重命名', name, async (newName) => {
+    newName = (newName || '').trim();
+    if (!newName || newName === name) return;
+    if (/[\\/:*?"<>|]/.test(newName)) { showSaveStatus('文件名包含非法字符', true); return; }
+    const r = await window.editorAPI.treeRename(p, newName);
+    if (!r || !r.ok) {
+      showSaveStatus('重命名失败: ' + ((r && r.message) || ''), true);
+      return;
+    }
+    treeRemovePath(r.oldPath);
+    treeAddPath(r.newPath, !!r.isDirectory);
+    const tab = findTabByPath(r.oldPath);
+    if (tab) closeTab(tab.id);
+    showSaveStatus('已重命名');
+  });
+}
+
+// 模板：templates.cpp / templates.c / templates.header（设置窗口可改）
+function treeTemplateForExt(ext) {
+  const t = (appSettings.templates) || {};
+  if (ext === 'c') return t.c || '';
+  if (ext === 'cpp') return t.cpp || '';
+  if (ext === 'h' || ext === 'hpp' || ext === 'hh') return t.header || '';
+  return '';
+}
+
+// 应用模板：$FILE_NAME$ → 不含扩展名的文件名；$cursor$ 记录位置后移除
+function applyTreeTemplate(ext, fullName) {
+  const dot = fullName.lastIndexOf('.');
+  const base = dot > 0 ? fullName.slice(0, dot) : fullName;
+  let tpl = treeTemplateForExt(ext);
+  if (!tpl) return { content: '', cursorOffset: -1 };
+  tpl = tpl.replace(/\$FILE_NAME\$/g, base);
+  let cursorOffset = -1;
+  if (tpl.indexOf('$cursor$') !== -1) {
+    const CURSOR_PH = '\u0001CURSOR\u0001';
+    tpl = tpl.replace('$cursor$', CURSOR_PH);
+    cursorOffset = tpl.indexOf(CURSOR_PH);
+    tpl = tpl.replace(CURSOR_PH, '');
+  }
+  return { content: tpl, cursorOffset };
+}
+
+async function createTreeFile(dir, name) {
+  const dot = name.lastIndexOf('.');
+  const ext = (dot > 0 ? name.slice(dot + 1) : '').toLowerCase();
+  const { content, cursorOffset } = applyTreeTemplate(ext, name);
+  const r = await window.editorAPI.treeCreateFile(dir, name, content);
+  if (!r || !r.ok) {
+    showSaveStatus('新建失败: ' + ((r && r.message) || ''), true);
+    return;
+  }
+  treeAddPath(r.path, false);
+  await openFileTab(r.path);
+  if (cursorOffset >= 0 && editor) {
+    const t = activeTab();
+    if (t && t.model) {
+      try {
+        const pos = t.model.getPositionAt(cursorOffset);
+        editor.setPosition(pos);
+        editor.revealPositionInCenter(pos);
+        editor.focus();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function askCreateFile(dir, defaultName) {
+  showTreeInput('新建文件', defaultName || '', (name) => {
+    name = (name || '').trim();
+    if (!name) return;
+    if (/[\\/:*?"<>|]/.test(name)) { showSaveStatus('文件名包含非法字符', true); return; }
+    createTreeFile(dir, name);
+  });
+}
+
+async function createTreeDir(dir, name) {
+  const r = await window.editorAPI.treeCreateDir(dir, name);
+  if (!r || !r.ok) {
+    showSaveStatus('新建失败: ' + ((r && r.message) || ''), true);
+    return;
+  }
+  treeAddPath(r.path, true);
+  showSaveStatus('已新建文件夹');
+}
+
+function askCreateDir(dir) {
+  showTreeInput('新建文件夹', '新文件夹', (name) => {
+    name = (name || '').trim();
+    if (!name) return;
+    if (/[\\/:*?"<>|]/.test(name)) { showSaveStatus('文件夹名包含非法字符', true); return; }
+    createTreeDir(dir, name);
+  });
+}
+
+function openTreeMenu(e, treeNode) {
+  if (!selectedTreePaths.has(normalizeTreeKey(treeNode && treeNode.path))) {
+    setTreeSelection([treeNode.path]);
+  }
+  const menu = document.getElementById('tree-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  const selAll = [...selectedTreePaths];
+  // 项目根自身不可剪切/删除/重命名；复制与「打开于-资源管理器」可用于项目根
+  const opList = treeOpList();
+  const anyFolder = selAll.some((p) => treeNodeIsDirectory(p));
+  const single = opList.length === 1;
+  const target = pasteTargetDir();
+
+  const item = (label, fn, disabled) => {
+    const d = document.createElement('div');
+    d.className = 'tree-menu-item' + (disabled ? ' disabled' : '');
+    d.textContent = label;
+    if (!disabled) d.addEventListener('click', (ev) => { ev.stopPropagation(); hideTreeMenu(); fn(); });
+    return d;
+  };
+  const sep = () => {
+    const d = document.createElement('div');
+    d.className = 'tree-menu-sep';
+    return d;
+  };
+
+  // 新建子菜单（第一位）：带文件图标；仅当存在目标目录时显示
+  if (target) {
+    const subWrap = document.createElement('div');
+    subWrap.className = 'tree-menu-item has-submenu';
+    subWrap.textContent = '新建';
+    const sub = document.createElement('div');
+    sub.className = 'tree-menu-sub';
+    const mkNew = (label, name, iconType, isDir) => {
+      const d = document.createElement('div');
+      d.className = 'tree-menu-item';
+      const img = document.createElement('img');
+      setFileIcon(img, iconType || 'unknown');
+      const sp = document.createElement('span');
+      sp.textContent = label;
+      d.appendChild(img);
+      d.appendChild(sp);
+      d.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        hideTreeMenu();
+        if (isDir) askCreateDir(target);
+        else askCreateFile(target, name);
+      });
+      sub.appendChild(d);
+    };
+    mkNew('文件夹', '', 'folder', true);
+    mkNew('.c 文件', 'new.c', 'c');
+    mkNew('.cpp 文件', 'new.cpp', 'cpp');
+    mkNew('.h 文件', 'new.h', 'h');
+    mkNew('.in 文件', 'new.in', 'txt');
+    mkNew('.out 文件', 'new.out', 'txt');
+    mkNew('.ans 文件', 'new.ans', 'txt');
+    mkNew('文件', 'new', 'unknown');
+    subWrap.appendChild(sub);
+    menu.appendChild(subWrap);
+    menu.appendChild(sep());
+  }
+
+  menu.appendChild(item('粘贴', () => pasteToDir(target), !target));
+  menu.appendChild(item('复制', copySelected, selAll.length === 0));
+  menu.appendChild(item('剪切', cutSelected, opList.length === 0));
+  menu.appendChild(sep());
+  menu.appendChild(item('重命名', () => { if (single) askRename(opList[0]); }, !single));
+  menu.appendChild(item('删除', deleteSelectedTreePaths, opList.length === 0));
+
+  // 打开于（子菜单，可扩展其他打开方式）
+  if (selAll.length) {
+    const openWrap = document.createElement('div');
+    openWrap.className = 'tree-menu-item has-submenu';
+    openWrap.textContent = '打开于';
+    const openSub = document.createElement('div');
+    openSub.className = 'tree-menu-sub';
+    const mkOpen = (label, iconType, fn) => {
+      const d = document.createElement('div');
+      d.className = 'tree-menu-item';
+      const img = document.createElement('img');
+      setFileIcon(img, iconType);
+      const sp = document.createElement('span');
+      sp.textContent = label;
+      d.appendChild(img);
+      d.appendChild(sp);
+      d.addEventListener('click', (ev) => { ev.stopPropagation(); hideTreeMenu(); fn(); });
+      openSub.appendChild(d);
+    };
+    mkOpen('资源管理器', 'explorer', () => {
+      const p = single ? (opList[0] || selAll[0]) : (anyFolder ? selAll.find((x) => treeNodeIsDirectory(x)) : selAll[0]);
+      if (p) window.editorAPI.treeReveal(p);
+    });
+    openWrap.appendChild(openSub);
+    menu.appendChild(openWrap);
+  }
+
+  menu.style.display = 'block';
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  let lx = e.clientX;
+  let ly = e.clientY;
+  if (lx + mw > window.innerWidth - 8) lx = Math.max(8, window.innerWidth - mw - 8);
+  if (ly + mh > window.innerHeight - 8) ly = Math.max(8, window.innerHeight - mh - 8);
+  menu.style.left = lx + 'px';
+  menu.style.top = ly + 'px';
+}
+
+function hideTreeMenu() {
+  const menu = document.getElementById('tree-menu');
+  if (menu) menu.style.display = 'none';
+}
+
+// 新建 / 重命名共用的输入弹层
+function showTreeInput(title, initial, onOk) {
+  const layer = document.getElementById('tree-input');
+  if (!layer) return;
+  document.getElementById('tree-input-title').textContent = title;
+  const field = document.getElementById('tree-input-field');
+  field.value = initial || '';
+  treeInputOnOk = onOk;
+  layer.style.display = 'flex';
+  field.focus();
+  field.select();
+}
+
+function hideTreeInput() {
+  const layer = document.getElementById('tree-input');
+  if (layer) layer.style.display = 'none';
+  treeInputOnOk = null;
+}
+
+function commitTreeInput() {
+  const fn = treeInputOnOk;
+  treeInputOnOk = null;
+  const value = document.getElementById('tree-input-field').value;
+  hideTreeInput();
+  if (fn) fn(value);
 }
 
 let projectFileTree = [];
@@ -1170,6 +1591,8 @@ async function loadProjectFile(){
   const toolbar = document.getElementById('filetoolbar');
   if (treeEl) treeEl.innerHTML = '';
   if (toolbar) toolbar.innerHTML = '';
+  clearTreeSelection();
+  hideTreeMenu();
   if (!projectInf || !projectInf.projectDir) {
     // 尚未设置项目路径：什么都不打开，仅显示「打开文件夹」按钮
     projectFileTree = [];
@@ -1183,10 +1606,28 @@ async function loadProjectFile(){
   const projectExpand = document.createElement('div');
   projectExpand.innerText = '>';
   projectExpand.classList.add('expand');
-  projectExpand.addEventListener('click', () => expandFolder(projectDom))
+  projectExpand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(projectDom); })
   projectDom.appendChild(projectExpand);
   projectDom.classList.add('folder');
   projectDom.classList.add('expanded');
+  projectDom.dataset.path = projectDir;
+  projectDom.dataset.type = 'directory';
+  projectDom.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (treeMenuVisible()) { hideTreeMenu(); return; }
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      toggleTreeSelection({ path: projectDir, type: 'directory' });
+      return;
+    }
+    // 仅点三角展开/折叠，点项目根本身只选中
+    setTreeSelection([projectDir]);
+  });
+  projectDom.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openTreeMenu(e, { path: projectDir, type: 'directory' });
+  });
   const projectImg = document.createElement('img');
   setFileIcon(projectImg, 'folder');
   const projectText = document.createElement('span');
@@ -1201,8 +1642,10 @@ async function loadProjectFile(){
   const projectChildren = document.createElement('div');
   projectChildren.classList.add('children');
   rendererFileTree(projectFileTree, projectChildren);
-  projectDom.appendChild(projectChildren);
-  if (treeEl) treeEl.appendChild(projectDom);
+  if (treeEl) {
+    treeEl.appendChild(projectDom);
+    projectDom.insertAdjacentElement('afterend', projectChildren);
+  }
   // 已打开项目：顶部显示「切换文件夹」按钮
   if (toolbar) renderSwitchFolderButton(toolbar);
   // 树已就绪，应用暂存的文件变化
@@ -1319,29 +1762,50 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer, isDirectory) {
       const el = document.createElement('div');
       if (isFile) {
         el.classList.add('file');
-        el.addEventListener('click', () => openFileTab(child.path));
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (treeMenuVisible()) { hideTreeMenu(); return; }
+          if (e.ctrlKey || e.metaKey) { e.preventDefault(); toggleTreeSelection(child); return; }
+          setTreeSelection([child.path]);
+          openFileTab(child.path);
+        });
       } else {
         el.classList.add('folder');
         const expand = document.createElement('div');
         expand.innerText = '>';
         expand.classList.add('expand');
-        expand.addEventListener('click', () => expandFolder(el));
+        expand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(el); });
         el.appendChild(expand);
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (treeMenuVisible()) { hideTreeMenu(); return; }
+          if (e.ctrlKey || e.metaKey) { e.preventDefault(); toggleTreeSelection(child); return; }
+          // 仅点三角展开/折叠，点文件夹本身只选中
+          setTreeSelection([child.path]);
+        });
       }
+      el.dataset.path = child.path;
+      el.dataset.type = isFile ? 'file' : 'directory';
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openTreeMenu(e, child);
+      });
       const img = document.createElement('img');
       setFileIcon(img, isFile ? getFileType(child) : 'folder');
       const text = document.createElement('span');
       text.innerText = child.name;
       el.appendChild(img);
       el.appendChild(text);
+      child.node = el;
+      insertChildDomSorted(levelContainer, el, child.name, !isFile);
       if (!isFile) {
+        // children 是 folder 的兄弟节点，紧跟其后
         const childrenEl = document.createElement('div');
         childrenEl.classList.add('children');
         childrenEl.style.display = 'none';
-        el.appendChild(childrenEl);
+        el.insertAdjacentElement('afterend', childrenEl);
       }
-      child.node = el;
-      insertChildDomSorted(levelContainer, el, child.name, !isFile);
     }
 
     // 若该节点此前被误判为文件（新路径要进入它），提升为目录
@@ -1354,21 +1818,22 @@ function insertFilePath(basePath, nodes, fullPath, rootContainer, isDirectory) {
         const el = child.node;
         el.classList.remove('file');
         el.classList.add('folder');
+        el.dataset.type = 'directory';
         const expand = document.createElement('div');
         expand.innerText = '>';
         expand.classList.add('expand');
-        expand.addEventListener('click', () => expandFolder(el));
+        expand.addEventListener('click', (e) => { e.stopPropagation(); expandFolder(el); });
         el.insertBefore(expand, el.firstChild);
         const childrenEl = document.createElement('div');
         childrenEl.classList.add('children');
         childrenEl.style.display = 'none';
-        el.appendChild(childrenEl);
+        el.insertAdjacentElement('afterend', childrenEl);
       }
     }
 
     if (child.type === 'directory') {
       levelNodes = child.children;
-      levelContainer = child.node ? child.node.querySelector(':scope > div.children') : null;
+      levelContainer = child.node ? childrenContainerOf(child.node) : null;
     } else {
       levelNodes = [];
       levelContainer = null;
@@ -1384,11 +1849,14 @@ function removeFilePath(nodes, fullPath, rootContainer) {
       const n = list[i];
       if (normalizeTreePath(n.path) === target) {
         list.splice(i, 1);
+        // children 是 n.node 的兄弟节点，需一并移除
+        const cc = childrenContainerOf(n.node);
         if (n.node && n.node.parentNode) n.node.parentNode.removeChild(n.node);
+        if (cc && cc.parentNode) cc.parentNode.removeChild(cc);
         return true;
       }
       if (n.type === 'directory') {
-        const childContainer = n.node ? n.node.querySelector(':scope > div.children') : null;
+        const childContainer = n.node ? childrenContainerOf(n.node) : null;
         if (removeIn(n.children, childContainer)) {
           // 空文件夹也保留在树中（与创建时「空文件夹可见」一致），
           // 目录本身的增删由 watcher 以 added/removed 事件驱动
@@ -1412,7 +1880,7 @@ function updateFileTree(info) {
     };
     return;
   }
-  const rootContainer = projectDom.querySelector(':scope > div.children');
+  const rootContainer = treeRootContainer();
   if (!rootContainer) return;
   for (const f of info.added || []) {
     const p = typeof f === 'object' ? f.path : f;
@@ -1422,8 +1890,10 @@ function updateFileTree(info) {
   for (const f of info.removed || []) {
     const p = typeof f === 'object' ? f.path : f;
     if (shouldIgnoreTreePath(p)) continue;
+    selectedTreePaths.delete(normalizeTreeKey(p));
     removeFilePath(projectFileTree, p, rootContainer);
   }
+  applyTreeSelection();
 }
 
 // ---------------------------------------------------------------------------
@@ -2323,8 +2793,33 @@ function init() {
     scheduleChange();
   });
 
-  // Ctrl+S / Cmd+S 保存文件
+    // Ctrl+S / Cmd+S 保存文件
   window.addEventListener('keydown', (e) => {
+    // Delete：文件树聚焦时删除选中项（移入回收站，需确认）
+    if (fileTreeFocused && (e.key === 'Delete' || e.key === 'Del')) {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteSelectedTreePaths();
+      return;
+    }
+    // Ctrl+C / Ctrl+X / Ctrl+V：文件树剪贴板操作（仅当焦点在文件树区域时接管，
+    // 否则保留编辑器的复制/剪切/粘贴行为）
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+      const k = (e.key || '').toLowerCase();
+      if (fileTreeFocused && (k === 'c' || k === 'x' || k === 'v')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (k === 'c') copySelected();
+        else if (k === 'x') cutSelected();
+        else pasteToDir(pasteTargetDir());
+        return;
+      }
+    }
+    // Esc 关闭右键菜单 / 输入弹层
+    if (e.key === 'Escape') {
+      if (document.getElementById('tree-input').style.display !== 'none') hideTreeInput();
+      else hideTreeMenu();
+    }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === 's') {
       e.preventDefault();
       saveFile();
@@ -2336,6 +2831,32 @@ function init() {
       if (t) closeTab(t.id);
     }
   });
+
+  // 文件树焦点追踪：点击文件树区域后 Ctrl+C/V/X 接管为文件操作；
+  // 点击其他区域（如编辑器）则恢复默认剪贴板行为。
+  document.addEventListener('mousedown', (e) => {
+    fileTreeFocused = !!(e.target && e.target.closest && e.target.closest('#fileframe'));
+  }, true);
+
+  // 点击菜单/输入层之外关闭右键菜单
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (t && t.closest && (t.closest('#tree-menu') || t.closest('#tree-input'))) return;
+    hideTreeMenu();
+  });
+
+  // 新建 / 重命名输入弹层
+  const treeInputOkBtn = document.getElementById('tree-input-ok');
+  const treeInputCancelBtn = document.getElementById('tree-input-cancel');
+  const treeInputField = document.getElementById('tree-input-field');
+  if (treeInputOkBtn) treeInputOkBtn.addEventListener('click', commitTreeInput);
+  if (treeInputCancelBtn) treeInputCancelBtn.addEventListener('click', hideTreeInput);
+  if (treeInputField) {
+    treeInputField.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitTreeInput(); }
+      else if (e.key === 'Escape') { e.preventDefault(); hideTreeInput(); }
+    });
+  }
 
   window.addEventListener('error', (e) => {
     console.error('[renderer] 未捕获错误:', e.message);

@@ -466,8 +466,9 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     transform: rotate(90deg);
 }
 
-#fileframe .folder > .children{
+#fileframe .children{
     width: 100%;
+    padding-left: 20px;
 }
 
 #fileframe .folder > img, #fileframe .file > img{
@@ -506,6 +507,158 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 #open-folder-btn img{
     width: 18px;
     height: 18px;
+}
+
+/* 文件树多选高亮 */
+#fileframe .file.selected,
+#fileframe .folder.selected{
+    background: #04395e;
+}
+
+#fileframe .file.selected > span,
+#fileframe .folder.selected > span{
+    color: #ffffff;
+}
+
+/* 文件树右键菜单 */
+#tree-menu{
+    position: fixed;
+    z-index: 1000;
+    min-width: 180px;
+    background: #252526;
+    border: 1px solid #454545;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+    padding: 4px 0;
+    font-size: 13px;
+    user-select: none;
+}
+
+#tree-menu .tree-menu-item{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    cursor: pointer;
+    color: #cccccc;
+    white-space: nowrap;
+    position: relative;
+}
+
+#tree-menu .tree-menu-item img{
+    width: 1.1em;
+    height: 1.1em;
+    flex-shrink: 0;
+}
+
+#tree-menu .tree-menu-item:hover{
+    background: #094771;
+    color: #ffffff;
+}
+
+#tree-menu .tree-menu-item.disabled{
+    color: #6e6e6e;
+    cursor: default;
+}
+
+#tree-menu .tree-menu-item.disabled:hover{
+    background: transparent;
+    color: #6e6e6e;
+}
+
+#tree-menu .tree-menu-sep{
+    height: 1px;
+    background: #3c3c3c;
+    margin: 4px 8px;
+}
+
+#tree-menu .tree-menu-item.has-submenu .tree-menu-sub{
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: -5px;
+    min-width: 160px;
+    background: #252526;
+    border: 1px solid #454545;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+    padding: 4px 0;
+}
+
+#tree-menu .tree-menu-item.has-submenu:hover .tree-menu-sub{
+    display: block;
+}
+
+/* 文件树新建 / 重命名输入弹层 */
+#tree-input{
+    position: fixed;
+    z-index: 1001;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,.35);
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+
+#tree-input .tree-input-box{
+    background: #252526;
+    border: 1px solid #454545;
+    border-radius: 4px;
+    padding: 14px 16px;
+    width: 320px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+
+#tree-input #tree-input-title{
+    color: #cccccc;
+    font-size: 13px;
+    margin-bottom: 10px;
+}
+
+#tree-input #tree-input-field{
+    width: 100%;
+    box-sizing: border-box;
+    background: #3c3c3c;
+    border: 1px solid #3f3f3f;
+    color: #cccccc;
+    padding: 5px 8px;
+    font-size: 13px;
+    outline: none;
+}
+
+#tree-input #tree-input-field:focus{
+    border-color: #007fd4;
+}
+
+#tree-input .tree-input-btns{
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+#tree-input .tree-input-btns button{
+    background: #3a3a3a;
+    border: 1px solid #454545;
+    color: #cccccc;
+    padding: 4px 14px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+#tree-input .tree-input-btns button:hover{
+    background: #454545;
+}
+
+#tree-input .tree-input-btns button#tree-input-ok{
+    background: #0e639c;
+    border-color: #0e639c;
+    color: #ffffff;
+}
+
+#tree-input .tree-input-btns button#tree-input-ok:hover{
+    background: #1177bb;
 }
 
 /* ---------------- 设置窗口：左侧导航 + 右侧内容面板 ---------------- */
@@ -780,6 +933,84 @@ html.theme-light body #filetree::-webkit-scrollbar-thumb{
 
 html.theme-light body #fileframe .file:hover{
     background-color: #ececec;
+}
+
+/* 文件树多选高亮浅色 */
+html.theme-light body #fileframe .file.selected,
+html.theme-light body #fileframe .folder.selected{
+    background: #d0e8f9;
+}
+
+html.theme-light body #fileframe .file.selected > span,
+html.theme-light body #fileframe .folder.selected > span{
+    color: #1a1a1a;
+}
+
+/* 右键菜单浅色 */
+html.theme-light body #tree-menu{
+    background: #ffffff;
+    border-color: #e6e6e6;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15);
+}
+
+html.theme-light body #tree-menu .tree-menu-item{
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-menu .tree-menu-item:hover{
+    background: #d0e8f9;
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-menu .tree-menu-item.disabled,
+html.theme-light body #tree-menu .tree-menu-item.disabled:hover{
+    color: #a0a0a0;
+    background: transparent;
+}
+
+html.theme-light body #tree-menu .tree-menu-sep{
+    background: #e6e6e6;
+}
+
+html.theme-light body #tree-menu .tree-menu-item.has-submenu .tree-menu-sub{
+    background: #ffffff;
+    border-color: #e6e6e6;
+}
+
+/* 输入弹层浅色 */
+html.theme-light body #tree-input .tree-input-box{
+    background: #ffffff;
+    border-color: #e6e6e6;
+}
+
+html.theme-light body #tree-input #tree-input-title{
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-input #tree-input-field{
+    background: #ffffff;
+    border-color: #d2d2d2;
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-input #tree-input-field:focus{
+    border-color: #007fd4;
+}
+
+html.theme-light body #tree-input .tree-input-btns button{
+    background: #f2f2f2;
+    border-color: #d2d2d2;
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-input .tree-input-btns button:hover{
+    background: #e6e6e6;
+}
+
+html.theme-light body #tree-input .tree-input-btns button#tree-input-ok{
+    background: #0e639c;
+    border-color: #0e639c;
+    color: #ffffff;
 }
 
 /* 设置窗口浅色 */

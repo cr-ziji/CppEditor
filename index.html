@@ -80,6 +80,21 @@
       <div class="build-body"></div>
     </div>
 
+    <!-- 文件树右键菜单（内容由渲染进程动态构建） -->
+    <div id="tree-menu" style="display:none"></div>
+
+    <!-- 文件树新建 / 重命名输入弹层 -->
+    <div id="tree-input" style="display:none">
+      <div class="tree-input-box">
+        <div id="tree-input-title"></div>
+        <input id="tree-input-field" type="text" spellcheck="false" />
+        <div class="tree-input-btns">
+          <button id="tree-input-ok" type="button">确定</button>
+          <button id="tree-input-cancel" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- monaco AMD loader -->
     <script src="editor://app/vs/loader.js"></script>
     <!-- 应用逻辑 -->

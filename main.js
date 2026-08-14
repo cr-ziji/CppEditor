@@ -1,8 +1,8 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, protocol } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, protocol, shell, clipboard } = require('electron');
 const windowStateKeeper = require('electron-window-state');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -270,6 +270,10 @@ function writeCompileCommands(projectDir) {
 // 定期对比源文件集合，增删发生时重建 compile_commands.json 并通知渲染进程，
 // 渲染进程再向 clangd 发送 workspace/didChangeWatchedFiles 使其实时索引。
 let projectWatcher = null;
+
+// 剪贴板中的文件是否为「剪切」（移动）。CF_HDROP 无剪切标志，
+// 用本地标记区分：true 表示下次粘贴为移动而非复制。
+let clipboardCut = false;
 
 // 监听快照取目录内所有文件（含 .h/.hpp 等头文件）及各自的 mtime/size，
 // 以便区分新增 / 删除 / 内容修改。目录本身也纳入快照（isDirectory: true），
@@ -845,6 +849,287 @@ function setupFileIpc() {
       return { ok: false, message: '保存失败: ' + err.message };
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // 文件树操作：复制 / 剪切 / 粘贴 / 重命名 / 删除 / 资源管理器定位 / 新建。
+  // 剪贴板文件使用 Electron 的 CF_HDROP（FileNameW），与 Windows 资源管理器互通。
+  // 所有操作仅允许作用于项目目录内。
+  // ---------------------------------------------------------------------------
+  ipcMain.handle('filetree:copy', async (_event, paths) => {
+    const list = sanitizeTreePaths(paths);
+    if (!list.length) return { ok: false, message: '没有可复制的文件' };
+    const r = await clipboardWriteFiles(list);
+    if (!r.ok) return { ok: false, message: '写入剪贴板失败: ' + r.message };
+    clipboardCut = false;
+    return { ok: true, count: list.length };
+  });
+
+  ipcMain.handle('filetree:cut', async (_event, paths) => {
+    const list = sanitizeTreePaths(paths);
+    if (!list.length) return { ok: false, message: '没有可剪切的文件' };
+    const r = await clipboardWriteFiles(list);
+    if (!r.ok) return { ok: false, message: '写入剪贴板失败: ' + r.message };
+    clipboardCut = true;
+    return { ok: true, count: list.length };
+  });
+
+  ipcMain.handle('filetree:paste', async (_event, destDir) => {
+    try {
+      if (!destDir || !fs.statSync(destDir).isDirectory()) {
+        return { ok: false, message: '目标文件夹无效' };
+      }
+    } catch {
+      return { ok: false, message: '目标文件夹无效' };
+    }
+    const read = await clipboardReadFiles();
+    if (!read.ok) return { ok: false, message: '读取剪贴板失败: ' + read.message };
+    const sources = read.paths;
+    if (!sources || !sources.length) return { ok: false, message: '剪贴板中没有文件' };
+    const results = [];
+    let failed = 0;
+    for (const src of sources) {
+      let isDirectory;
+      try {
+        isDirectory = fs.statSync(src).isDirectory();
+      } catch {
+        results.push({ src, ok: false, message: '源文件不存在' });
+        failed++;
+        continue;
+      }
+      const dest = uniqueDestPath(destDir, path.basename(src));
+      if (isWithin(src, dest)) {
+        results.push({ src, ok: false, message: '不能将文件夹复制到其自身内部' });
+        failed++;
+        continue;
+      }
+      try {
+        if (clipboardCut) movePath(src, dest);
+        else copyPathRecursive(src, dest);
+        results.push({ src, dest, isDirectory, moved: !!clipboardCut, ok: true });
+      } catch (err) {
+        results.push({ src, ok: false, message: err.message });
+        failed++;
+      }
+    }
+    // 剪切（移动）成功后清空剪贴板，避免重复粘贴；部分失败也放弃移动标记
+    if (clipboardCut) {
+      clipboardCut = false;
+      if (failed === 0) clipboard.clear();
+    }
+    return { ok: failed === 0, results };
+  });
+
+  ipcMain.handle('filetree:rename', (_event, oldPath, newName) => {
+    if (typeof newName !== 'string' || !newName.trim()) return { ok: false, message: '文件名不能为空' };
+    newName = newName.trim();
+    if (/[\\/:*?"<>|]/.test(newName)) return { ok: false, message: '文件名包含非法字符: \\ / : * ? " < > |' };
+    if (newName === '.' || newName === '..') return { ok: false, message: '文件名不合法' };
+    if (!oldPath || !fs.existsSync(oldPath)) return { ok: false, message: '源文件不存在' };
+    const isDirectory = fs.statSync(oldPath).isDirectory();
+    const dest = path.join(path.dirname(oldPath), newName);
+    if (fs.existsSync(dest)) return { ok: false, message: '已存在同名文件或文件夹' };
+    try {
+      fs.renameSync(oldPath, dest);
+      return { ok: true, oldPath, newPath: dest, isDirectory };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+  });
+
+  ipcMain.handle('filetree:delete', async (_event, paths) => {
+    const list = sanitizeTreePaths(paths);
+    const results = [];
+    let failed = 0;
+    for (const p of list) {
+      if (!fs.existsSync(p)) {
+        results.push({ path: p, ok: false, message: '文件不存在' });
+        failed++;
+        continue;
+      }
+      try {
+        // 优先移入回收站（可恢复），失败时退回直接删除
+        await shell.trashItem(p);
+        results.push({ path: p, ok: true });
+      } catch {
+        try {
+          fs.rmSync(p, { recursive: true, force: true });
+          results.push({ path: p, ok: true });
+        } catch (err) {
+          results.push({ path: p, ok: false, message: err.message });
+          failed++;
+        }
+      }
+    }
+    return { ok: failed === 0, results };
+  });
+
+  ipcMain.handle('filetree:reveal', (_event, p) => {
+    if (!p || !fs.existsSync(p)) return { ok: false, message: '文件不存在' };
+    shell.showItemInFolder(p);
+    return { ok: true };
+  });
+
+  // 新建文件：内容由渲染端按模板替换好（$FILE_NAME$ / $cursor$）后传入
+  ipcMain.handle('filetree:create-file', (_event, dir, name, content) => {
+    if (typeof name !== 'string' || !name.trim()) return { ok: false, message: '文件名不能为空' };
+    name = name.trim();
+    if (/[\\/:*?"<>|]/.test(name)) return { ok: false, message: '文件名包含非法字符: \\ / : * ? " < > |' };
+    if (name === '.' || name === '..') return { ok: false, message: '文件名不合法' };
+    if (!dir || !fs.existsSync(dir)) return { ok: false, message: '目标文件夹无效' };
+    const dest = path.join(dir, name);
+    if (fs.existsSync(dest)) return { ok: false, message: '已存在同名文件' };
+    try {
+      fs.writeFileSync(dest, typeof content === 'string' ? content : '', 'utf8');
+      updateSnapshotEntry(dest);
+      return { ok: true, path: dest };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+  });
+
+  ipcMain.handle('filetree:create-dir', (_event, dir, name) => {
+    if (typeof name !== 'string' || !name.trim()) return { ok: false, message: '文件夹名不能为空' };
+    name = name.trim();
+    if (/[\\/:*?"<>|]/.test(name)) return { ok: false, message: '文件夹名包含非法字符: \\ / : * ? " < > |' };
+    if (name === '.' || name === '..') return { ok: false, message: '文件夹名不合法' };
+    if (!dir || !fs.existsSync(dir)) return { ok: false, message: '目标文件夹无效' };
+    const dest = path.join(dir, name);
+    if (fs.existsSync(dest)) return { ok: false, message: '已存在同名文件夹' };
+    try {
+      fs.mkdirSync(dest);
+      updateSnapshotEntry(dest);
+      return { ok: true, path: dest };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+  });
+}
+
+// 校验文件树操作路径：仅允许项目目录内的绝对路径，去重
+function sanitizeTreePaths(paths) {
+  if (!Array.isArray(paths)) return [];
+  const out = [];
+  for (const p of paths) {
+    if (typeof p !== 'string') continue;
+    const r = path.resolve(p);
+    if (!projectPath || !isWithin(projectPath, r)) continue;
+    if (out.some((x) => x.toLowerCase() === r.toLowerCase())) continue;
+    out.push(r);
+  }
+  return out;
+}
+
+// 目标目录下生成不冲突的路径：同名自动追加 " (1)"、" (2)"...
+function uniqueDestPath(destDir, name) {
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  let cand = path.join(destDir, name);
+  let i = 1;
+  while (fs.existsSync(cand)) {
+    cand = path.join(destDir, base + ' (' + i + ')' + ext);
+    i++;
+  }
+  return cand;
+}
+
+function copyPathRecursive(src, dest) {
+  const st = fs.statSync(src);
+  if (st.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const ent of fs.readdirSync(src)) {
+      copyPathRecursive(path.join(src, ent), path.join(dest, ent));
+    }
+  } else {
+    fs.copyFileSync(src, dest);
+  }
+}
+
+function movePath(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    // 跨磁盘分区时 rename 抛 EXDEV，退化为复制后删除
+    if (err && err.code === 'EXDEV') {
+      copyPathRecursive(src, dest);
+      fs.rmSync(src, { recursive: true, force: true });
+    } else {
+      throw err;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Windows 剪贴板文件（CF_HDROP / FileNameW）
+// Electron 28 没有 readFilePaths/writeFilePaths，且 writeBuffer('FileNameW')
+// 只是写入 text/uri-list 字符串，资源管理器无法识别为文件粘贴。
+// 因此借助 PowerShell 的 System.Windows.Forms.Clipboard::SetFileDropList /
+// GetFileDropList 读写真正的 CF_HDROP，与资源管理器完全互通（仅 Windows）。
+// ---------------------------------------------------------------------------
+const CLIP_SCRIPT_DIR = () => path.join(app.getPath('temp'), 'cppeditor-clip');
+
+const WRITE_CLIP_PS1 = `param([string]$listFile)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$paths = Get-Content -LiteralPath $listFile -Encoding UTF8
+$col = New-Object System.Collections.Specialized.StringCollection
+foreach ($p in $paths) { if ($p -and -not [string]::IsNullOrWhiteSpace($p)) { [void]$col.Add($p) } }
+if ($col.Count -gt 0) { [System.Windows.Forms.Clipboard]::SetFileDropList($col) }
+Write-Output ('OK:' + $col.Count)`;
+
+const READ_CLIP_PS1 = `$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+  $col = [System.Windows.Forms.Clipboard]::GetFileDropList()
+  foreach ($p in $col) { Write-Output $p }
+}`;
+
+function runClipboardScript(scriptFile, args) {
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, ...(args || [])],
+      { encoding: 'utf8', timeout: 15000, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) resolve({ ok: false, message: (stderr || err.message || '').trim().split(/\r?\n/)[0] });
+        else resolve({ ok: true, output: stdout || '' });
+      }
+    );
+  });
+}
+
+// 将文件路径列表写入系统剪贴板（CF_HDROP）。返回 { ok, count } / { ok:false, message }。
+async function clipboardWriteFiles(paths) {
+  try {
+    const dir = CLIP_SCRIPT_DIR();
+    fs.mkdirSync(dir, { recursive: true });
+    const listFile = path.join(dir, 'list.txt');
+    const scriptFile = path.join(dir, 'write.ps1');
+    fs.writeFileSync(listFile, paths.join('\r\n'), 'utf8');
+    if (!fs.existsSync(scriptFile)) fs.writeFileSync(scriptFile, WRITE_CLIP_PS1, 'utf8');
+    const r = await runClipboardScript(scriptFile, ['-listFile', listFile]);
+    if (!r.ok) return r;
+    const m = /^OK:(\d+)/m.exec(r.output);
+    return { ok: true, count: m ? Number(m[1]) : paths.length };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+}
+
+// 从系统剪贴板读取文件路径列表。返回 { ok, paths } / { ok:false, message }。
+async function clipboardReadFiles() {
+  try {
+    const dir = CLIP_SCRIPT_DIR();
+    fs.mkdirSync(dir, { recursive: true });
+    const scriptFile = path.join(dir, 'read.ps1');
+    if (!fs.existsSync(scriptFile)) fs.writeFileSync(scriptFile, READ_CLIP_PS1, 'utf8');
+    const r = await runClipboardScript(scriptFile);
+    if (!r.ok) return { ok: false, message: r.message, paths: [] };
+    const paths = r.output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return { ok: true, paths };
+  } catch (err) {
+    return { ok: false, message: err.message, paths: [] };
+  }
 }
 
 // ---------------------------------------------------------------------------

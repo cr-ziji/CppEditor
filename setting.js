@@ -37,7 +37,7 @@
         templates: {
             cpp: '',
             c: '',
-            header: '#ifndef _{FILE_NAME}_H_\n#define _{FILE_NAME}_H_\n\n\n#endif',
+            header: '#ifndef C_$FILE_NAME$_H\n#define C_$FILE_NAME$_H\n$cursor$\n#endif',
         },
         shortcuts: {
             newFile: 'Ctrl+N',
