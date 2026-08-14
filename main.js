@@ -650,8 +650,12 @@ function setupSettingsIpc() {
   ipcMain.handle('settings:save', (_event, patch) => {
     if (patch && typeof patch === 'object') {
       const compileChanged = patch.compile && typeof patch.compile === 'object';
+      // 分组做合并（partial update）：渲染端可只提交部分字段（如文件树宽度），
+      // 不会覆盖分组内其它设置。设置窗口提交完整分组时结果与整体替换一致。
       for (const key of ['compile', 'editor', 'templates', 'shortcuts']) {
-        if (patch[key] && typeof patch[key] === 'object') appSettings[key] = patch[key];
+        if (patch[key] && typeof patch[key] === 'object') {
+          appSettings[key] = { ...(appSettings[key] || {}), ...patch[key] };
+        }
       }
       persistSettings();
       // 编译相关设置变化：
@@ -1351,6 +1355,7 @@ function createWindow() {
   const numParam = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
   const urlFont = numParam(e.fontSize, 14);
   const urlTreeFont = numParam(e.fileTreeFontSize, 14);
+  const urlTreeWidth = numParam(e.fileTreeWidth, 300);
 
   mainWindow = new BrowserWindow({
     x: mainWindowState.x,
@@ -1387,7 +1392,8 @@ function createWindow() {
 
   mainWindow.loadURL(
     EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT) +
-    '&theme=' + urlTheme + '&fontSize=' + urlFont + '&treeFontSize=' + urlTreeFont
+    '&theme=' + urlTheme + '&fontSize=' + urlFont + '&treeFontSize=' + urlTreeFont +
+    '&fileTreeWidth=' + urlTreeWidth
   );
 
   // 页面加载完成后，若有待打开的关联文件（启动时带文件参数，或加载期间收到

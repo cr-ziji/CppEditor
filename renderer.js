@@ -2950,6 +2950,21 @@ function applyTreeFontSize(v) {
   if (treeEl) treeEl.style.fontSize = clampFontSize(v) + 'px';
 }
 
+// 文件树面板宽度：限制在合理区间（最小 160px，给编辑器区域至少留 300px），
+// 宽度由 #resizer 拖拽调整并记忆化保存（appSettings.editor.fileTreeWidth）。
+const FILE_TREE_MIN_WIDTH = 160;
+function clampFileTreeWidth(w) {
+  const n = Number(w);
+  if (!Number.isFinite(n)) return null;
+  const max = Math.max(FILE_TREE_MIN_WIDTH, window.innerWidth - 300);
+  return Math.round(Math.min(max, Math.max(FILE_TREE_MIN_WIDTH, n)));
+}
+function applyFileTreeWidth(v) {
+  const frame = document.getElementById('fileframe');
+  const w = clampFileTreeWidth(v);
+  if (frame && w !== null) frame.style.width = w + 'px';
+}
+
 // 应用配色主题：Monaco 主题（全局 API，不依赖 editor 实例）+ 应用界面深浅色。
 // monaco 尚未加载时只切换界面主题，编辑器创建后再应用 Monaco 主题。
 function applyAppTheme(theme) {
@@ -3279,6 +3294,55 @@ async function startEditor() {
   bootstrap();
 }
 
+// 文件树宽度拖拽调整（#resizer）：
+// - mousedown 开始拖拽，mousemove 实时改 #fileframe 宽度，mouseup 结束并持久化。
+// - 拖拽期间给 body 加 .resizing（全局 col-resize 光标 + 禁用文本选择）。
+// - 松开鼠标时把宽度记忆化保存到设置，下次启动由主进程 URL 参数首帧恢复。
+function initResizer() {
+  const resizer = document.getElementById('resizer');
+  const frame = document.getElementById('fileframe');
+  if (!resizer || !frame) return;
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  const onMove = (e) => {
+    if (!dragging) return;
+    const w = clampFileTreeWidth(startWidth + (e.clientX - startX));
+    if (w !== null) frame.style.width = w + 'px';
+  };
+
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('resizing');
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
+    // 记忆化：保存面板宽度
+    const w = clampFileTreeWidth(parseInt(frame.style.width, 10));
+    if (w !== null) {
+      appSettings.editor = appSettings.editor || {};
+      appSettings.editor.fileTreeWidth = w;
+      window.editorAPI.saveSettings({ editor: { fileTreeWidth: w } }).catch(() => {});
+    }
+  };
+
+  resizer.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startWidth = frame.getBoundingClientRect().width;
+    document.body.classList.add('resizing');
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    // 拖拽中鼠标移出窗口后松开时兜底结束
+    window.addEventListener('blur', onUp);
+  });
+}
+
 function initHeader(){
   document.getElementById('minimize-btn').addEventListener('click', () => {
     window.editorAPI.minimizeWindow();
@@ -3375,6 +3439,7 @@ function init() {
   });
 
   initHeader();
+  initResizer();
 
   ensureProjectLoaded();
 
@@ -3384,10 +3449,11 @@ function init() {
     if (filePath) openFileTab(filePath);
   });
 
-  // 设置窗口保存后即时应用外观（主题、字号、括号行为）
+  // 设置窗口保存后即时应用外观（主题、字号、括号行为、文件树宽度）
   window.editorAPI.onSettingsChanged((s) => {
     if (s && s.editor) appSettings = s;
     applyEditorSettings();
+    applyFileTreeWidth(appSettings.editor && appSettings.editor.fileTreeWidth);
   });
 
   // compile_commands.json 已重建：clangd 会自动监听该文件变化，这里立即发
@@ -3547,12 +3613,17 @@ function init() {
   if (Number.isFinite(treeFontFromUrl)) {
     applyTreeFontSize(treeFontFromUrl);
   }
+  const treeWidthFromUrl = Number(q.get('fileTreeWidth'));
+  if (Number.isFinite(treeWidthFromUrl)) {
+    applyFileTreeWidth(treeWidthFromUrl);
+  }
   if (!window.editorAPI) return;
   window.editorAPI.loadSettings()
     .then((s) => {
       if (s && s.editor) appSettings = s;
       applyAppTheme(s && s.editor && s.editor.theme);
       applyTreeFontSize(s && s.editor && s.editor.fileTreeFontSize);
+      applyFileTreeWidth(s && s.editor && s.editor.fileTreeWidth);
     })
     .catch(() => {});
 })();

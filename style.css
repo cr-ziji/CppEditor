@@ -392,6 +392,16 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     background-color: #0078d4;
 }
 
+/* 拖拽调整文件树宽度期间：全局改为调整大小光标，并禁用文本选择 */
+body.resizing{
+    cursor: col-resize;
+    user-select: none;
+}
+
+body.resizing #resizer{
+    background-color: #0078d4;
+}
+
 /* 文件树顶部工具栏（切换文件夹按钮） */
 #filetoolbar{
     flex-shrink: 0;
