@@ -66,7 +66,15 @@ contextBridge.exposeInMainWorld('editorAPI', {
     return () => ipcRenderer.removeListener('lsp:project-changed', listener);
   },
 
-  // 订阅「编译参数已变化，请重启 clangd」事件（设置窗口修改编译设置后触发）。
+  // 订阅「compile_commands.json 已重建，请通知 clangd 重新加载」事件（设置窗口修改编译设置后触发）。
+  // 回调参数为 compile_commands.json 绝对路径。
+  onLspCompileDbUpdated: (callback) => {
+    const listener = (_event, compileDbPath) => callback(compileDbPath);
+    ipcRenderer.on('lsp:compile-db-updated', listener);
+    return () => ipcRenderer.removeListener('lsp:compile-db-updated', listener);
+  },
+
+  // 订阅「编译参数已变化，请重启 clangd」事件（无项目、仅有 fallback 参数时触发）。
   onLspRestart: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('lsp:restart', listener);

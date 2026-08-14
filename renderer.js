@@ -2279,6 +2279,19 @@ function init() {
     applyEditorSettings();
   });
 
+  // compile_commands.json 已重建：clangd 会自动监听该文件变化，这里立即发
+  // didChangeWatchedFiles 让它马上重载，并强制当前文档按新参数重新解析
+  window.editorAPI.onLspCompileDbUpdated((compileDbPath) => {
+    if (shutdown || !lsp || !lsp.initialized) return;
+    if (compileDbPath) {
+      lsp.connection.sendNotification('workspace/didChangeWatchedFiles', {
+        changes: [{ uri: 'file:///' + compileDbPath.replace(/\\/g, '/'), type: 2 }],
+      });
+    }
+    scheduleChange();
+    refreshSemanticTokens();
+  });
+
   // 编译设置变化后主进程广播 lsp:restart：重启 clangd 以加载新编译参数
   window.editorAPI.onLspRestart(() => {
     if (shutdown) return;

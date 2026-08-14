@@ -650,11 +650,17 @@ function setupSettingsIpc() {
         if (patch[key] && typeof patch[key] === 'object') appSettings[key] = patch[key];
       }
       persistSettings();
-      // 仅编译相关设置变化才需要重建 compile_commands.json 并重启 clangd；
-      // 外观/模板/快捷键等变化不打扰语言服务器
+      // 编译相关设置变化：
+      // - 有项目：重建 compile_commands.json。clangd 会自行监控该文件变化并重载索引，
+      //   只需通知渲染端发 didChangeWatchedFiles 让它立即生效，无需重启。
+      // - 无项目：clangd 用的是启动时传入的 fallback 参数，必须重启才能更新。
       if (compileChanged) {
-        if (projectPath) writeCompileCommands(projectPath);
-        emitToRenderer('lsp:restart');
+        if (projectPath) {
+          writeCompileCommands(projectPath);
+          emitToRenderer('lsp:compile-db-updated', path.join(projectPath, 'compile_commands.json'));
+        } else {
+          emitToRenderer('lsp:restart');
+        }
       }
       // 通知主窗口即时应用最新设置（主题、字号、括号行为等）
       emitToRenderer('settings:changed', appSettings);
