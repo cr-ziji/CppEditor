@@ -17,14 +17,14 @@
     "dist": "electron-builder"
   },
   "dependencies": {
-    "electron-window-state": "^5.0.3",
-    "monaco-editor": "^0.56.0",
-    "vscode-jsonrpc": "^9.0.1",
-    "vscode-languageserver-protocol": "^3.18.2"
+    "electron-window-state": "^5.0.3"
   },
   "devDependencies": {
     "electron": "^28.3.3",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "monaco-editor": "^0.56.0",
+    "vscode-jsonrpc": "^9.0.1",
+    "vscode-languageserver-protocol": "^3.18.2"
   },
   "build": {
     "electronLanguages": [
@@ -34,7 +34,8 @@
       "**/*",
       "!resources/clangd/**",
       "!resources/mingw/**",
-      "!CppProject/**"
+      "!CppProject/**",
+      "!android/**"
     ],
     "extraResources": [
       {
