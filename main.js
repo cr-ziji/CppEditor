@@ -7,8 +7,7 @@ const path = require('path');
 const fs = require('fs');
 
 // ---------------------------------------------------------------------------
-// 自定义 editor:// 协议：用于在渲染进程中安全地加载 monaco 编辑器与
-// vscode-jsonrpc / vscode-languageserver-protocol 等前端脚本。
+// 自定义 editor:// 协议：用于在渲染进程中安全地加载 web/ 前端脚本。
 // 必须在 app ready 之前注册。
 // ---------------------------------------------------------------------------
 const EDITOR_SCHEME = 'editor';
@@ -28,33 +27,13 @@ protocol.registerSchemesAsPrivileged([
 
 // app 根目录（开发模式下是项目根目录，打包后是 asar 内的应用根目录）
 const APP_ROOT = app.getAppPath();
-const NODE_MODULES = path.join(APP_ROOT, 'node_modules');
 
 // ---------------------------------------------------------------------------
-// 路径映射表：editor://app/<path> 的前缀 -> 磁盘真实目录
+// 路径映射：editor://app/<path> 一律从应用根目录读取。
+// 前端所需的 monaco（vs/）、vscode 协议库（vendor/）等资源均已内嵌于 web/，
+// 因此这里只需一个兜底路由。
 // ---------------------------------------------------------------------------
 const ROUTES = [
-  {
-    prefix: '/vs/',
-    root: path.join(NODE_MODULES, 'monaco-editor', 'min', 'vs'),
-    strip: '/vs/',
-  },
-  {
-    prefix: '/vendor/vscode-jsonrpc/',
-    root: path.join(NODE_MODULES, 'vscode-jsonrpc'),
-    strip: '/vendor/vscode-jsonrpc/',
-  },
-  {
-    prefix: '/vendor/vscode-languageserver-protocol/',
-    root: path.join(NODE_MODULES, 'vscode-languageserver-protocol'),
-    strip: '/vendor/vscode-languageserver-protocol/',
-  },
-  {
-    prefix: '/vendor/vscode-languageserver-types/',
-    root: path.join(NODE_MODULES, 'vscode-languageserver-types'),
-    strip: '/vendor/vscode-languageserver-types/',
-  },
-  // 兜底：其余路径都从应用根目录读取（index.html / renderer.js / preload.js 等）
   {
     prefix: '/',
     root: APP_ROOT,
@@ -992,6 +971,12 @@ function setupFileIpc() {
     return { ok: true };
   });
 
+  ipcMain.handle('filetree:open-file', (_event, p) => {
+    if (!p || !fs.existsSync(p)) return { ok: false, message: '文件不存在' };
+    shell.openPath(p);
+    return { ok: true };
+  });
+
   // 新建文件：内容由渲染端按模板替换好（$FILE_NAME$ / $cursor$）后传入
   ipcMain.handle('filetree:create-file', (_event, dir, name, content) => {
     if (typeof name !== 'string' || !name.trim()) return { ok: false, message: '文件名不能为空' };
@@ -1030,7 +1015,11 @@ function setupFileIpc() {
   // 编辑器复制/粘贴/剪切用文本剪贴板。sandbox 预加载脚本中无 clipboard 模块，故经主进程读写。
   ipcMain.handle('clipboard:read-text', () => clipboard.readText());
   ipcMain.handle('clipboard:write-text', (_event, text) => {
-    if (typeof text === 'string') clipboard.writeText(text);
+    clipboard.writeText(text);
+    return { ok: true };
+  });
+  ipcMain.handle('clipboard:copy-path', (_event, filePath) => {
+    clipboard.writeText(filePath);
     return { ok: true };
   });
 }
@@ -1384,7 +1373,6 @@ function createWindow() {
     minWidth: 640,
     minHeight: 400,
     show: false,
-    paintWhenInitiallyHidden: false,
     backgroundColor: urlTheme === 'light' ? '#fafafa' : '#1e1e1e',
     autoHideMenuBar: true,
     title: 'CppEditor',
@@ -1410,7 +1398,7 @@ function createWindow() {
   });
 
   mainWindow.loadURL(
-    EDITOR_SCHEME + '://app/index.html?root=' + encodeURIComponent(APP_ROOT) +
+    EDITOR_SCHEME + '://app/web/index.html?root=' + encodeURIComponent(APP_ROOT) +
     '&theme=' + urlTheme + '&fontSize=' + urlFont + '&treeFontSize=' + urlTreeFont +
     '&fileTreeWidth=' + urlTreeWidth
   );
@@ -1439,7 +1427,7 @@ function createWindow() {
     emitToRenderer('window:unmaximized');
   })
 
-  mainWindow.webContents.openDevTools({ mode: 'detach' });
+  // mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
 function createSettingWindow() {
@@ -1451,7 +1439,6 @@ function createSettingWindow() {
     minWidth: 520,
     minHeight: 560,
     show: false,
-    paintWhenInitiallyHidden: false,
     backgroundColor: urlTheme === 'light' ? '#fafafa' : '#1e1e1e',
     autoHideMenuBar: true,
     title: '设置',
@@ -1476,7 +1463,7 @@ function createSettingWindow() {
   });
 
   settingWindow.loadURL(
-      EDITOR_SCHEME + '://app/setting.html?root=' + encodeURIComponent(APP_ROOT) + '&theme=' + urlTheme
+      EDITOR_SCHEME + '://app/web/setting.html?root=' + encodeURIComponent(APP_ROOT) + '&theme=' + urlTheme
   );
 
   settingWindow.on('closed', () => {
@@ -1490,7 +1477,7 @@ function createSettingWindow() {
     emitToRenderer('window:unmaximized');
   })
 
-  settingWindow.webContents.openDevTools({ mode: 'detach' });
+  // settingWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
 function setupWindowIpc() {

@@ -2,6 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>CppEditor</title>
     <script>
       // 首帧前同步应用主题：在 <html> 根上加 class，CSS 一旦应用即按主题着色，避免先闪深色
@@ -12,20 +13,25 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="editor://app/vs/editor/editor.main.css">
-    <link rel="stylesheet" href="editor://app/style.css">
+    <link rel="stylesheet" href="vs/editor/editor.main.css">
+    <link rel="stylesheet" href="style.css">
   </head>
   <body>
     <header>
-      <img src="editor://app/icon.svg" alt="CppEditor" id="app-icon">
+      <img src="icon.svg" alt="CppEditor" id="app-icon">
       <h1 id="app-title">CppEditor</h1>
-      <button id="run-btn"><img src="editor://app/resources/header/run.svg" data-dark-src="editor://app/resources/header/run.svg" data-light-src="editor://app/resources/header/light/run.svg" alt="运行"></button>
-      <button id="find-btn" title="查找 / 替换 (Ctrl+F / Ctrl+R)"><img src="editor://app/resources/header/find.svg" data-dark-src="editor://app/resources/header/find.svg" data-light-src="editor://app/resources/header/light/find.svg" alt="查找"></button>
-      <button id="setting-btn"><img src="editor://app/resources/header/setting.svg" data-dark-src="editor://app/resources/header/setting.svg" data-light-src="editor://app/resources/header/light/setting.svg" alt="设置"></button>
-      <button id="minimize-btn"><img src="editor://app/resources/header/minimize.svg" data-dark-src="editor://app/resources/header/minimize.svg" data-light-src="editor://app/resources/header/light/minimize.svg" alt="最小化"></button>
-      <button id="maximize-btn"><img src="editor://app/resources/header/maximize.svg" data-dark-src="editor://app/resources/header/maximize.svg" data-light-src="editor://app/resources/header/light/maximize.svg" alt="最大化"></button>
-      <button id="unmaximize-btn" style="display: none"><img src="editor://app/resources/header/unmaximize.svg" data-dark-src="editor://app/resources/header/unmaximize.svg" data-light-src="editor://app/resources/header/light/unmaximize.svg" alt="还原"></button>
-      <button id="close-btn"><img src="editor://app/resources/header/close.svg" data-dark-src="editor://app/resources/header/close.svg" data-light-src="editor://app/resources/header/light/close.svg" alt="关闭"></button>
+      <button id="files-btn" title="文件列表"><img src="resources/header/files.svg" data-dark-src="resources/header/files.svg" data-light-src="resources/header/light/files.svg" alt="文件"></button>
+      <button id="newfile-btn" title="新建文件 (Ctrl+N)"><img src="resources/header/newfile.svg" data-dark-src="resources/header/newfile.svg" data-light-src="resources/header/light/newfile.svg" alt="新建"></button>
+      <button id="undo-btn" title="撤销 (Ctrl+Z)"><img src="resources/header/undo.svg" data-dark-src="resources/header/undo.svg" data-light-src="resources/header/light/undo.svg" alt="撤销"></button>
+      <button id="redo-btn" title="重做 (Ctrl+Y)"><img src="resources/header/redo.svg" data-dark-src="resources/header/redo.svg" data-light-src="resources/header/light/redo.svg" alt="重做"></button>
+      <button id="save-btn" title="保存 (Ctrl+S)"><img src="resources/header/save.svg" data-dark-src="resources/header/save.svg" data-light-src="resources/header/light/save.svg" alt="保存"></button>
+      <button id="run-btn"><img src="resources/header/run.svg" data-dark-src="resources/header/run.svg" data-light-src="resources/header/light/run.svg" alt="运行"><svg class="run-spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path class="spinner-arc" d="M12 2 a10 10 0 0 1 10 10" fill="none" stroke="currentColor"/></svg></button>
+      <button id="find-btn" title="查找 / 替换 (Ctrl+F / Ctrl+R)"><img src="resources/header/find.svg" data-dark-src="resources/header/find.svg" data-light-src="resources/header/light/find.svg" alt="查找"></button>
+      <button id="setting-btn"><img src="resources/header/setting.svg" data-dark-src="resources/header/setting.svg" data-light-src="resources/header/light/setting.svg" alt="设置"></button>
+      <button id="minimize-btn"><img src="resources/header/minimize.svg" data-dark-src="resources/header/minimize.svg" data-light-src="resources/header/light/minimize.svg" alt="最小化"></button>
+      <button id="maximize-btn"><img src="resources/header/maximize.svg" data-dark-src="resources/header/maximize.svg" data-light-src="resources/header/light/maximize.svg" alt="最大化"></button>
+      <button id="unmaximize-btn" style="display: none"><img src="resources/header/unmaximize.svg" data-dark-src="resources/header/unmaximize.svg" data-light-src="resources/header/light/unmaximize.svg" alt="还原"></button>
+      <button id="close-btn"><img src="resources/header/close.svg" data-dark-src="resources/header/close.svg" data-light-src="resources/header/light/close.svg" alt="关闭"></button>
     </header>
 
     <div id="content">
@@ -102,6 +108,25 @@
       <div class="build-body"></div>
     </div>
 
+    <!-- 交互式终端面板：全屏覆盖，仿 Termux -->
+    <div id="terminal" style="display:none">
+      <div class="term-head">
+        <span class="term-title">终端</span>
+        <span class="term-time"></span>
+        <button id="term-close" title="关闭终端">×</button>
+      </div>
+      <div class="term-body">
+        <pre class="term-content"></pre>
+      </div>
+      <textarea class="term-kb" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    </div>
+
+    <!-- 光标行诊断提示条：显示当前行的 clangd 错误/警告详情 -->
+    <div id="diag-hover" style="display:none" onclick="this.style.display='none'">
+      <span id="diag-hover-icon"></span>
+      <span id="diag-hover-text"></span>
+    </div>
+
     <!-- 文件树右键菜单（内容由渲染进程动态构建） -->
     <div id="tree-menu" style="display:none"></div>
 
@@ -129,9 +154,25 @@
       </div>
     </div>
 
+    <!-- 自定义 confirm 弹层（替代 window.confirm，Android WebView 无 WebChromeClient 时不工作） -->
+    <div id="confirm-dialog" style="display:none">
+      <div class="confirm-box">
+        <div id="confirm-message"></div>
+        <div class="confirm-btns">
+          <button id="confirm-ok" type="button">确定</button>
+          <button id="confirm-cancel" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 窄屏文件树抽屉的半透明遮罩（默认隐藏，点击关闭抽屉） -->
+    <div id="tree-backdrop" style="display:none"></div>
+
     <!-- monaco AMD loader -->
-    <script src="editor://app/vs/loader.js"></script>
+    <script src="vs/loader.js"></script>
+    <!-- 平台适配层（Electron 下自动跳过；Android 下用原生桥实现 editorAPI） -->
+    <script src="platform.js"></script>
     <!-- 应用逻辑 -->
-    <script src="editor://app/renderer.js"></script>
+    <script src="renderer.js"></script>
   </body>
 </html>

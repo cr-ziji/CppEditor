@@ -77,10 +77,29 @@ contextBridge.exposeInMainWorld('editorAPI', {
   treeDelete: (paths) => ipcRenderer.invoke('filetree:delete', paths),
   // 在资源管理器中定位；返回 { ok }。
   treeReveal: (filePath) => ipcRenderer.invoke('filetree:reveal', filePath),
+  // 用系统默认关联应用打开文件；返回 { ok }。
+  treeOpenFile: (filePath) => ipcRenderer.invoke('filetree:open-file', filePath),
   // 在 dir 下新建文件（内容由渲染端按模板替换）；返回 { ok, path } 或 { ok:false, message }。
   treeCreateFile: (dir, name, content) => ipcRenderer.invoke('filetree:create-file', dir, name, content),
   // 在 dir 下新建文件夹；返回 { ok, path } 或 { ok:false, message }。
   treeCreateDir: (dir, name) => ipcRenderer.invoke('filetree:create-dir', dir, name),
+
+  // 复制文件路径到剪贴板（通过主进程 IPC）。
+  treeCopyPath: (filePath) => ipcRenderer.invoke('clipboard:copy-path', filePath),
+
+  // ── 交互式运行（Android 专用；Electron 端为桩）──
+  startRun: () => Promise.resolve({ ok: false, message: '桌面端不支持交互式运行' }),
+  sendInput: () => Promise.resolve({ ok: false }),
+  stopRun: () => Promise.resolve({ ok: true }),
+  onRunStdout: () => () => {},
+  onRunStderr: () => () => {},
+  onRunExit: () => () => {},
+  onRunStarted: () => () => {},
+
+  // ── 工具链状态（Android 专用；Electron 端始终 ready）──
+  toolchainStatus: () => Promise.resolve({ ready: true }),
+  onToolchainProgress: () => () => {},
+  onToolchainReady: () => () => {},
 
   // 订阅项目目录文件增删事件（{ projectDir, added, removed }）。返回取消订阅函数。
   onProjectChanged: (callback) => {

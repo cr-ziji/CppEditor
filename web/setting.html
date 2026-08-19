@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>设置</title>
+    <script>
+      // 首帧前同步应用主题：在 <html> 根上加 class，CSS 一旦应用即按主题着色，避免先闪深色
+      (function () {
+        var t = new URLSearchParams(location.search).get('theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.classList.add(t === 'light' ? 'theme-light' : 'theme-dark');
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="setting-page">
+    <header>
+        <img src="icon.svg" alt="CppEditor" id="app-icon">
+        <h1 id="app-title">设置</h1>
+        <button id="close-btn"><img src="resources/header/close.svg" data-dark-src="resources/header/close.svg" data-light-src="resources/header/light/close.svg" alt="返回"></button>
+    </header>
+
+    <div class="settings-shell">
+        <nav class="settings-nav">
+            <button class="nav-item active" data-panel="appearance">
+                <img src="resources/settings/appearance.svg" data-dark-src="resources/settings/appearance.svg" data-light-src="resources/settings/light/appearance.svg" alt="外观">
+                <span>外观</span>
+            </button>
+            <button class="nav-item" data-panel="compile">
+                <img src="resources/settings/compile.svg" data-dark-src="resources/settings/compile.svg" data-light-src="resources/settings/light/compile.svg" alt="编译">
+                <span>编译</span>
+            </button>
+            <button class="nav-item" data-panel="templates">
+                <img src="resources/settings/templates.svg" data-dark-src="resources/settings/templates.svg" data-light-src="resources/settings/light/templates.svg" alt="代码模板">
+                <span>代码模板</span>
+            </button>
+            <button class="nav-item" data-panel="shortcuts">
+                <img src="resources/settings/shortcuts.svg" data-dark-src="resources/settings/shortcuts.svg" data-light-src="resources/settings/light/shortcuts.svg" alt="快捷键">
+                <span>快捷键</span>
+            </button>
+        </nav>
+
+        <div class="settings-content">
+            <section class="settings-panel active" data-panel="appearance">
+                <h2 class="panel-heading">外观</h2>
+                <p class="panel-sub">配色、字号与编辑器的括号匹配行为</p>
+
+                <div class="group">
+                    <div class="group-heading">界面</div>
+                    <div class="row">
+                        <label class="label" for="themeMode">配色主题</label>
+                        <select id="themeMode">
+                            <option value="dark">深色</option>
+                            <option value="light">浅色</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="fontSize">编辑器字号</label>
+                        <input type="number" id="fontSize" min="8" max="40" step="1">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="fileTreeFontSize">文件树字号</label>
+                        <input type="number" id="fileTreeFontSize" min="8" max="40" step="1">
+                    </div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">括号匹配</div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="autoIndent"> 输入时自动缩进</label>
+                    </div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="autoMatchBrackets"> 括号自动匹配</label>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-panel" data-panel="compile">
+                <h2 class="panel-heading">编译与运行</h2>
+                <p class="panel-sub">设置编译与链接使用的参数、语言标准与警告级别</p>
+
+                <div class="group">
+                    <div class="group-heading">编译器</div>
+                    <div class="row">
+                        <label class="label" for="compileCommand">编译参数</label>
+                        <input type="text" id="compileCommand">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="linkCommand">链接参数</label>
+                        <input type="text" id="linkCommand">
+                    </div>
+                    <div class="row">
+                        <label class="label" for="warningLevel">代码警告数量</label>
+                        <select id="warningLevel">
+                            <option value="0">0 - 关闭警告</option>
+                            <option value="1">1 - 基础警告（-W）</option>
+                            <option value="2">2 - 常用警告（-Wall）</option>
+                            <option value="3">3 - 更多警告（-Wall -Wextra）</option>
+                            <option value="4">4 - 全部警告（-Wall -Wextra -Wpedantic）</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">语言标准</div>
+                    <div class="row">
+                        <label class="label" for="languageStandardCpp">C++ 标准</label>
+                        <select id="languageStandardCpp">
+                            <option value="c++11">C++11</option>
+                            <option value="c++14">C++14</option>
+                            <option value="c++17">C++17</option>
+                            <option value="c++20">C++20</option>
+                            <option value="c++23">C++23</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="languageStandardC">C 标准</label>
+                        <select id="languageStandardC">
+                            <option value="c11">C11</option>
+                            <option value="c17">C17</option>
+                            <option value="c23">C23</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-panel" data-panel="templates">
+                <h2 class="panel-heading">代码模板</h2>
+                <p class="panel-sub">新建各类文件时自动填入的默认内容</p>
+
+                <div class="group">
+                    <div class="row">
+                        <label class="label" for="templateCpp">C++ 源文件（.cpp）</label>
+                        <textarea id="templateCpp" rows="5"></textarea>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="templateC">C 源文件（.c）</label>
+                        <textarea id="templateC" rows="5"></textarea>
+                    </div>
+                    <div class="row">
+                        <label class="label" for="templateHeader">头文件（.h / .hpp）</label>
+                        <textarea id="templateHeader" rows="5"></textarea>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-panel" data-panel="shortcuts">
+                <h2 class="panel-heading" id="shortcuts-heading">快捷键</h2>
+                <p class="panel-sub" id="shortcuts-sub">快捷键一览（不可修改）</p>
+
+                <div class="group">
+                    <div class="group-heading">编辑器</div>
+                    <div class="shortcut-row"><span class="shortcut-desc">新建未命名文件</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">N</span></span><span class="mobile-keys" style="display:none">文件树长按 →「新建」</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">保存文件</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">S</span></span><span class="mobile-keys" style="display:none">编辑器长按 →「保存」</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">F</span></span><span class="mobile-keys" style="display:none">点击顶部查找按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">替换</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">R</span></span><span class="mobile-keys" style="display:none">查找栏内「替换」按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">关闭当前标签页</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">W</span></span><span class="mobile-keys" style="display:none">点击标签页「×」</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">重启语言服务器 (LSP)</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">R</span></span><span class="mobile-keys" style="display:none">设置 → 重启 LSP</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">运行</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">F5</span></span><span class="mobile-keys" style="display:none">点击顶部运行按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找下一个匹配</span><span class="shortcut-keys"><span class="kbd">F3</span></span><span class="mobile-keys" style="display:none">查找栏「▼」按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找上一个匹配</span><span class="shortcut-keys"><span class="kbd">Shift</span>+<span class="kbd">F3</span></span><span class="mobile-keys" style="display:none">查找栏「▲」按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">跳转到定义</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">左键</span></span><span class="mobile-keys" style="display:none">编辑器长按 →「到定义」</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">跳转到引用</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">左键</span></span><span class="mobile-keys" style="display:none">编辑器长按 →「到引用」</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查找栏：下一个 / 上一个</span><span class="shortcut-keys"><span class="kbd">Enter</span> / <span class="kbd">Shift</span>+<span class="kbd">Enter</span></span><span class="mobile-keys" style="display:none">「▼」/「▲」按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">替换栏：替换当前 / 全部替换</span><span class="shortcut-keys"><span class="kbd">Enter</span> / <span class="kbd">Shift</span>+<span class="kbd">Enter</span></span><span class="mobile-keys" style="display:none">「替换」/「全部替换」按钮</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">关闭查找栏 / 引用面板 / 右键菜单</span><span class="shortcut-keys"><span class="kbd">Esc</span></span><span class="mobile-keys" style="display:none">点击关闭按钮 / 点击空白处</span></div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">文件树（聚焦文件树时生效）</div>
+                    <div class="shortcut-row"><span class="shortcut-desc">删除选中项（移入回收站）</span><span class="shortcut-keys"><span class="kbd">Delete</span></span><span class="mobile-keys" style="display:none">长按 →「删除」</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">复制 / 剪切 / 粘贴</span><span class="shortcut-keys"><span class="kbd">Ctrl</span>+<span class="kbd">C</span> / <span class="kbd">X</span> / <span class="kbd">V</span></span><span class="mobile-keys" style="display:none">长按 →「复制/剪切/粘贴」</span></div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">移动端手势</div>
+                    <div class="shortcut-row"><span class="shortcut-desc">打开文件树</span><span class="shortcut-keys mobile-keys" style="display:none">点击顶部文件按钮 / 从左侧边缘右滑</span><span class="shortcut-keys desktop-keys">仅移动端</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查看编译输出</span><span class="shortcut-keys mobile-keys" style="display:none">点击状态栏错误/警告计数</span><span class="shortcut-keys desktop-keys">仅移动端</span></div>
+                    <div class="shortcut-row"><span class="shortcut-desc">查看行内诊断</span><span class="shortcut-keys mobile-keys" style="display:none">光标所在行有错误/警告时自动显示在底部</span><span class="shortcut-keys desktop-keys">仅移动端</span></div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script src="platform.js"></script>
+    <script src="setting.js"></script>
+</body>
+</html>

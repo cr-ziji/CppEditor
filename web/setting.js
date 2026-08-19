@@ -34,7 +34,7 @@
         templates: {
             cpp: '',
             c: '',
-            header: '#ifndef C_$FILE_NAME$_H\n#define C_$FILE_NAME$_H\n$cursor$\n#endif',
+            header: '#pragma once',
         },
     };
 
@@ -146,4 +146,16 @@
     getField('themeMode').addEventListener('change', () => {
         applyAppTheme(getField('themeMode').value);
     });
+
+    // 移动端：快捷键面板切换为手势说明
+    if (window.AndroidBridge) {
+        document.getElementById('shortcuts-heading').textContent = '操作说明';
+        document.getElementById('shortcuts-sub').textContent = '移动端操作一览';
+        document.querySelectorAll('.shortcut-keys').forEach(el => el.style.display = 'none');
+        document.querySelectorAll('.desktop-keys').forEach(el => el.style.display = 'none');
+        document.querySelectorAll('.mobile-keys').forEach(el => el.style.display = '');
+    } else {
+        document.querySelectorAll('.mobile-keys').forEach(el => el.style.display = 'none');
+        document.querySelectorAll('.desktop-keys').forEach(el => el.style.display = '');
+    }
 })();

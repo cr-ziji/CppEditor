@@ -5,3 +5,12 @@ resources/mingw
 CppProject
 dist
 build/path-backup.txt
+web/vendor
+web/vs
+android/.gradle
+android/.kotlin
+android/.idea
+android/build
+android/app/build
+android/app/src/main/assets/toolchain
+android/local.properties

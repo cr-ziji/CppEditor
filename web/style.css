@@ -26,6 +26,7 @@ header {
     padding: 10px;
     padding-right: 5px;
     border-bottom: 1px solid #3c3c3c;
+    align-items: center;
 }
 
 header #app-icon {
@@ -39,7 +40,8 @@ header #app-title {
     margin-right: auto;
 }
 
-header #run-btn, header #setting-btn, header #find-btn{
+header #files-btn, header #run-btn, header #setting-btn, header #find-btn,
+header #newfile-btn, header #undo-btn, header #redo-btn, header #save-btn{
     -webkit-app-region: no-drag;
     width: 30px;
     height: 30px;
@@ -51,13 +53,15 @@ header #run-btn, header #setting-btn, header #find-btn{
     justify-content: center;
     border-radius: 7px;
     margin-right: 30px;
+    cursor: pointer;
 }
 
 header #find-btn{
     margin-right: 10px;
 }
 
-header #run-btn:hover, header #setting-btn:hover, header #find-btn:hover{
+header #files-btn:hover, header #run-btn:hover, header #setting-btn:hover, header #find-btn:hover,
+header #newfile-btn:hover, header #undo-btn:hover, header #redo-btn:hover, header #save-btn:hover{
     background: #3A3B3F;
 }
 
@@ -69,8 +73,16 @@ header #find-btn img{
     width: 18px;
 }
 
+header #files-btn img{
+    width: 18px;
+}
+
 header #setting-btn img{
     width: 16px;
+}
+
+header #newfile-btn img, header #undo-btn img, header #redo-btn img, header #save-btn img{
+    width: 18px;
 }
 
 header #minimize-btn, header #maximize-btn, header #unmaximize-btn, header #close-btn {
@@ -96,6 +108,37 @@ header #close-btn:hover {
 
 header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, header #close-btn img {
     width: 15px;
+}
+
+/* 文件列表按钮（切换文件树面板）：始终可见 */
+#files-btn {
+    display: flex;
+}
+
+/* 文件列表按钮激活状态：背景高亮表示文件树已展开 */
+header #files-btn.files-active {
+    background: rgba(128, 128, 128, 0.25);
+}
+
+/* 窄屏文件树抽屉的遮罩：默认隐藏 */
+#tree-backdrop {
+    display: none;
+}
+
+/* 移动端（Android WebView）：没有窗口系统，隐藏最小化 / 最大化 / 还原 / 关闭按钮 */
+html.platform-android header #minimize-btn,
+html.platform-android header #maximize-btn,
+html.platform-android header #unmaximize-btn,
+html.platform-android header #close-btn {
+    display: none;
+}
+
+/* 但设置页需要返回按钮：设置窗口里 #close-btn 承担「返回」职责 */
+html.platform-android body.setting-page header #close-btn {
+    display: flex;
+    width: 38px;
+    height: 34px;
+    margin: 0;
 }
 
 #content {
@@ -159,16 +202,117 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
     background: #3c3c3c;
 }
 
+/* 交互式终端面板 — 全屏覆盖，仿 Termux */
+#terminal{
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 9999;
+    flex-direction: column;
+    background: #1e1e1e;
+}
+#terminal .term-head{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid #3c3c3c;
+    font-size: 13px;
+    color: #cccccc;
+    flex-shrink: 0;
+    z-index: 5;
+    position: relative;
+}
+#terminal .term-title{ font-weight: 600; }
+#terminal .term-time{ color: #888; font-size: 11px; }
+#terminal .term-body{
+    flex: 1;
+    overflow: auto;
+    padding: 10px 14px;
+    pointer-events: none;
+}
+#terminal .term-content{
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 14px;
+    line-height: 1.4;
+    color: #cccccc;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+/* 隐藏 textarea 用于唤起虚拟键盘，覆盖整个终端 */
+#terminal .term-kb{
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%; height: 100%;
+    opacity: 0;
+    font-size: 16px;
+    border: none; outline: none; resize: none;
+    background: transparent;
+    color: transparent;
+    caret-color: transparent;
+    z-index: 2;
+    padding: 0;
+    margin: 0;
+}
+/* 光标闪烁块 */
+.term-cursor{
+    background: #cccccc;
+    color: #1e1e1e;
+}
+@keyframes term-blink{ 50%{ opacity: 0; } }
+#term-close{
+    background: none; border: none; color: #cccccc;
+    font-size: 20px; line-height: 1; cursor: pointer;
+    padding: 4px 10px; border-radius: 4px; margin-left: auto;
+    position: relative; z-index: 10;
+}
+#term-close:hover{ background: #3c3c3c; }
+
+/* clangd 诊断提示条：显示在 build-output 下方、statusbar 上方 */
+#diag-hover{
+    display: none;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+    flex-shrink: 0;
+    border-top: 1px solid #3c3c3c;
+    background: #252526;
+    max-height: 80px;
+    overflow: auto;
+    word-break: break-all;
+}
+#diag-hover.error{ color: #f48771; border-left: 3px solid #f48771; }
+#diag-hover.warning{ color: #dcdcaa; border-left: 3px solid #dcdcaa; }
+#diag-hover.info{ color: #75beff; border-left: 3px solid #75beff; }
+#diag-hover.hint{ color: #cccccc; border-left: 3px solid #cccccc; }
+html.theme-light body #diag-hover{ background: #f5f5f5; border-color: #e0e0e0; }
+html.theme-light body #diag-hover.error{ color: #b00020; }
+html.theme-light body #diag-hover.warning{ color: #795e26; }
+
+/* 运行按钮加载动画：隐藏原图标，显示旋转圆圈 */
+@keyframes btn-spin-rotate{ from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+header #run-btn .run-spinner{ display:none; width:20px; height:20px; }
+header #run-btn .run-spinner circle{ fill:none; stroke:rgba(99,179,237,.3); stroke-width:3; }
+header #run-btn .run-spinner .spinner-arc{ stroke:rgba(99,179,237,1); stroke-linecap:round; animation: btn-spin-rotate 0.8s linear infinite; transform-origin:center; }
+header #run-btn.running img{ display:none !important; }
+header #run-btn.running .run-spinner{ display:block !important; }
+header #run-btn.running{ pointer-events:none; }
+
 #textframe{
     display: flex;
     flex-direction: column;
-    height: 100%;
     flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 
 #tabbar{
     height: 35px;
+    flex-shrink: 0;
     display: flex;
     border-bottom: 1px solid #3c3c3c;
     padding: 0 7px;
@@ -241,6 +385,7 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
 
 #editor {
     flex-grow: 1;
+    min-height: 0;
 }
 
 /* 非文本视图（图片 / 二进制 / 错误提示） */
@@ -281,6 +426,7 @@ header #minimize-btn img, header #maximize-btn img, header #unmaximize-btn img, 
  * ------------------------------------------------------------------ */
 #statusbar {
     height: 28px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 18px;
@@ -496,7 +642,6 @@ body.resizing #resizer{
 }
 
 #fileframe .children{
-    width: 100%;
     padding-left: 20px;
 }
 
@@ -614,6 +759,11 @@ body.resizing #resizer{
 }
 
 #tree-menu .tree-menu-item.has-submenu:hover .tree-menu-sub, #editor-menu .tree-menu-item.has-submenu:hover .tree-menu-sub{
+    display: block;
+}
+
+/* 触屏设备没有 hover：点击父项通过 JS 加 .open 类展开子菜单 */
+#tree-menu .tree-menu-item.has-submenu.open .tree-menu-sub, #editor-menu .tree-menu-item.has-submenu.open .tree-menu-sub{
     display: block;
 }
 
@@ -745,6 +895,65 @@ body.resizing #resizer{
 }
 
 #tree-input .tree-input-btns button#tree-input-ok:hover{
+    background: #1177bb;
+}
+
+/* 自定义 confirm 弹层 */
+#confirm-dialog{
+    position: fixed;
+    z-index: 1001;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,.35);
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+
+#confirm-dialog .confirm-box{
+    background: #252526;
+    border: 1px solid #454545;
+    border-radius: 4px;
+    padding: 14px 16px;
+    width: 320px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+
+#confirm-dialog #confirm-message{
+    color: #cccccc;
+    font-size: 13px;
+    margin-bottom: 14px;
+    line-height: 1.5;
+}
+
+#confirm-dialog .confirm-btns{
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+#confirm-dialog .confirm-btns button{
+    background: #3a3a3a;
+    border: 1px solid #454545;
+    color: #cccccc;
+    padding: 4px 14px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+#confirm-dialog .confirm-btns button:hover{
+    background: #454545;
+}
+
+#confirm-dialog .confirm-btns button#confirm-ok{
+    background: #0e639c;
+    border-color: #0e639c;
+    color: #ffffff;
+}
+
+#confirm-dialog .confirm-btns button#confirm-ok:hover{
     background: #1177bb;
 }
 
@@ -1070,10 +1279,19 @@ html.theme-light body header{
     border-bottom: 1px solid #e6e6e6;
 }
 
+html.theme-light body header #files-btn:hover,
 html.theme-light body header #run-btn:hover,
 html.theme-light body header #setting-btn:hover,
-html.theme-light body header #find-btn:hover{
+html.theme-light body header #find-btn:hover,
+html.theme-light body header #newfile-btn:hover,
+html.theme-light body header #undo-btn:hover,
+html.theme-light body header #redo-btn:hover,
+html.theme-light body header #save-btn:hover{
     background: #e6e6e6;
+}
+
+html.theme-light body header #files-btn.files-active{
+    background: #d0d0d0;
 }
 
 html.theme-light body header #minimize-btn:hover,
@@ -1207,6 +1425,34 @@ html.theme-light body #tree-menu .tree-menu-item.has-submenu .tree-menu-sub, htm
     border-color: #e6e6e6;
 }
 
+/* 确认弹层浅色 */
+html.theme-light body #confirm-dialog{
+    background: rgba(0,0,0,.2);
+}
+html.theme-light body #confirm-dialog .confirm-box{
+    background: #ffffff;
+    border-color: #e6e6e6;
+}
+html.theme-light body #confirm-dialog #confirm-message{
+    color: #1a1a1a;
+}
+html.theme-light body #confirm-dialog .confirm-btns button{
+    background: #f0f0f0;
+    border-color: #d0d0d0;
+    color: #1a1a1a;
+}
+html.theme-light body #confirm-dialog .confirm-btns button:hover{
+    background: #e0e0e0;
+}
+html.theme-light body #confirm-dialog .confirm-btns button#confirm-ok{
+    background: #0e639c;
+    border-color: #0e639c;
+    color: #ffffff;
+}
+html.theme-light body #confirm-dialog .confirm-btns button#confirm-ok:hover{
+    background: #1177bb;
+}
+
 /* 引用结果面板浅色 */
 html.theme-light body #references-panel{
     background: #ffffff;
@@ -1299,6 +1545,14 @@ html.theme-light body #build-close{
 html.theme-light body #build-close:hover{
     background: #ececec;
 }
+
+/* 终端面板浅色主题 */
+html.theme-light body #terminal{ background: #ffffff; }
+html.theme-light body #terminal .term-head{ border-bottom-color: #e6e6e6; color: #424242; }
+html.theme-light body #terminal .term-content{ color: #424242; }
+html.theme-light body .term-cursor{ background: #424242; color: #ffffff; }
+html.theme-light body #term-close{ color: #424242; }
+html.theme-light body #term-close:hover{ background: #ececec; }
 
 html.theme-light body #findbar{
     background: #ffffff;
@@ -1431,4 +1685,174 @@ html.theme-light body .group .row input[type="number"]::-webkit-inner-spin-butto
     width: 14px;
     height: 14px;
     cursor: pointer;
+}
+
+/* ------------------------------------------------------------------
+ * 移动端（小屏）适配：窄屏下压缩头部、文件树、状态栏与弹层尺寸。
+ * 通过 viewport meta 保证 1:1 CSS 像素，配合这里的分辨率断点生效。
+ * ------------------------------------------------------------------ */
+@media (max-width: 760px) {
+
+    header {
+        padding: 6px 8px;
+        z-index: 60;
+        position: relative;
+    }
+
+    header #app-icon {
+        width: 22px;
+        margin-right: auto;
+    }
+
+    /* 窄屏下隐藏应用标题，把空间留给操作按钮 */
+    header #app-title {
+        display: none;
+    }
+
+    /* 更大触控目标：40px 高的按钮 */
+    header #files-btn,
+    header #run-btn,
+    header #setting-btn,
+    header #find-btn,
+    header #newfile-btn,
+    header #undo-btn,
+    header #redo-btn,
+    header #save-btn {
+        width: 40px;
+        height: 40px;
+        margin-right: 6px;
+    }
+
+    header #find-btn {
+        margin-right: 4px;
+    }
+
+    /* 文件树在窄屏下默认收起：以抽屉形式从左侧滑出，编辑器获得全宽 */
+    #fileframe {
+        position: fixed;
+        top: 53px;
+        bottom: 0;
+        left: 0;
+        width: min(78vw, 300px) !important;
+        max-width: none;
+        min-width: 0;
+        z-index: 40;
+        background: #252526;
+        transform: translateX(-100%);
+        transition: transform 0.18s ease;
+        box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
+    }
+
+    body.tree-open #fileframe {
+        transform: translateX(0);
+    }
+
+    /* 抽屉背后的半透明遮罩：点击可关闭抽屉 */
+    #tree-backdrop {
+        position: fixed;
+        top: 53px;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 39;
+        background: rgba(0, 0, 0, 0.35);
+    }
+
+    /* 窄屏下禁用手势拖拽调整文件树宽度 */
+    #resizer {
+        display: none;
+    }
+
+    #tabbar .tab {
+        max-width: 120px;
+    }
+
+    /* 查找 / 替换栏：靠右悬浮改为贴近左右边缘的全宽 */
+    #findbar {
+        left: 8px;
+        right: 8px;
+        top: 48px;
+        min-width: 0;
+    }
+
+    #findbar .find-options {
+        gap: 10px;
+    }
+
+    /* 状态栏：隐藏次要项，压缩间距 */
+    #statusbar {
+        gap: 8px;
+        padding: 0 8px;
+        font-size: 11px;
+    }
+
+    #save-status,
+    #file-status {
+        display: none;
+    }
+
+    #lsp-status-text {
+        max-width: 46vw;
+    }
+
+    /* 引用面板：全宽贴近边缘 */
+    #references-panel {
+        left: 8px;
+        right: 8px;
+        min-width: 0;
+        max-width: none;
+    }
+
+    /* 文件树输入弹层：占满屏宽留边距 */
+    #tree-input .tree-input-box {
+        width: calc(100vw - 32px);
+        max-width: 340px;
+    }
+
+    /* 右键菜单在窄屏下也加大触控行高 */
+    #tree-menu .tree-menu-item,
+    #editor-menu .tree-menu-item {
+        min-height: 40px;
+        line-height: 40px;
+    }
+
+    /* 设置窗口：左侧导航收窄，行布局在窄屏下改为上下堆叠 */
+    .settings-nav {
+        width: 56px;
+    }
+
+    .nav-item {
+        font-size: 10px;
+        padding: 8px 2px;
+    }
+
+    .settings-content {
+        padding: 12px;
+    }
+
+    .group .row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+    }
+
+    .group .row .label {
+        width: auto;
+    }
+
+    .group .row.check {
+        padding-left: 0;
+    }
+
+    /* 触摸友好：禁用双击缩放等系统手势 */
+    button,
+    #switch-folder-btn,
+    .tab {
+        touch-action: manipulation;
+    }
+
+    html.theme-light body #fileframe {
+        background: #fafafa;
+        box-shadow: 2px 0 8px rgba(0, 0, 0, 0.12);
+    }
 }
