@@ -3358,6 +3358,23 @@ async function startEditor() {
   // 编辑器已创建，应用全部外观设置（字号、括号行为等）
   applyEditorSettings();
 
+  // Ctrl + 滚轮缩放编辑器字号（capture phase，抢在 Monaco 之前）
+  document.addEventListener('wheel', (e) => {
+    if (!editor) return;
+    if (!e.ctrlKey && !e.metaKey) return;
+    if (!e.target.closest || !e.target.closest('#editor')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const cur = clampFontSize(appSettings.editor && appSettings.editor.fontSize);
+    const step = e.deltaY < 0 ? 1 : -1;
+    const next = clampFontSize(cur + step);
+    if (next === cur) return;
+    if (!appSettings.editor) appSettings.editor = {};
+    appSettings.editor.fontSize = next;
+    editor.updateOptions({ fontSize: next });
+    window.editorAPI.saveSettings(appSettings).catch(() => {});
+  }, { passive: false, capture: true });
+
   editor.onDidChangeModelContent(() => {
     const t = activeTab();
     if (t && t.kind === 'text' && t.model) {
@@ -3761,6 +3778,7 @@ async function runActiveFile() {
   if (t.dirty) await saveFile();
 
   // ── 编译阶段 ──
+  hideBuildOutput();
   const runBtn = document.getElementById('run-btn');
   if (runBtn) { runBtn.classList.add('running'); runBtn.disabled = true; }
   setLspState('connecting', '正在编译 ' + t.name + ' ...');
@@ -3778,25 +3796,29 @@ async function runActiveFile() {
 
   if (!compileResult || !compileResult.ok) {
     if (runBtn) { runBtn.classList.remove('running'); runBtn.disabled = false; }
-    const msg = (compileResult && compileResult.message) || '编译失败';
-    if (compileResult && compileResult.stderr) showBuildOutput('error', compileResult.stderr);
+    const errText = (compileResult && (compileResult.stderr || compileResult.output || compileResult.message)) || '编译失败';
+    showBuildOutput('error', errText);
     setLspState('error', '编译失败');
     showSaveStatus('编译失败', true);
     return;
   }
 
   // 编译成功 → 显示警告（如有）并启动终端
-  const warnings = compileResult.warnings || '';
-  const exePath = compileResult.executable;
+  const warnings = compileResult.warnings || compileResult.output || '';
+  const exePath = compileResult.exePath || compileResult.executable;
   if (runBtn) { runBtn.classList.remove('running'); runBtn.disabled = false; }
-  setLspState('connected', '编译成功，正在运行...');
-  showSaveStatus('正在运行 ' + t.name + ' ...');
+  const isAndroidPlatform = document.documentElement.classList.contains('platform-android');
 
-  // ── 打开终端 ──
-  openTerminal(warnings);
-
-  // ── 启动交互式运行 ──
-  await window.editorAPI.startRun(exePath);
+  if (!isAndroidPlatform) {
+    showSaveStatus('编译成功，正在运行...');
+    setLspState('connected', '编译成功');
+    if (warnings) showBuildOutput('warning', warnings);
+  } else {
+    setLspState('connected', '编译成功，正在运行...');
+    showSaveStatus('正在运行 ' + t.name + ' ...');
+    openTerminal(warnings);
+    await window.editorAPI.startRun(exePath);
+  }
 }
 
 // ── 终端管理（仿 Termux：textarea 键盘 + 流式输出 + 内联光标）──
@@ -4043,14 +4065,15 @@ function init() {
   });
 
     // Ctrl+S / Cmd+S 保存文件
-  window.addEventListener('keydown', (e) => {
-    // Delete：文件树聚焦时删除选中项（移入回收站，需确认）
+  // Delete：capture phase 确保在 Monaco 之前拦截
+  document.addEventListener('keydown', (e) => {
     if (fileTreeFocused && (e.key === 'Delete' || e.key === 'Del')) {
       e.preventDefault();
       e.stopPropagation();
       deleteSelectedTreePaths();
-      return;
     }
+  }, true);
+  window.addEventListener('keydown', (e) => {
     // Esc 关闭右键菜单 / 输入弹层
     if (e.key === 'Escape') {
       if (document.getElementById('tree-input').style.display !== 'none') hideTreeInput();
