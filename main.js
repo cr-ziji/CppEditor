@@ -254,30 +254,21 @@ let projectWatcher = null;
 // 用本地标记区分：true 表示下次粘贴为移动而非复制。
 let clipboardCut = false;
 
-// 监听快照取目录内所有文件（含 .h/.hpp 等头文件）及各自的 mtime/size，
-// 以便区分新增 / 删除 / 内容修改。目录本身也纳入快照（isDirectory: true），
-// 这样空文件夹的创建 / 删除也能被感知并同步到文件树。
 function snapshotProjectFiles(dir) {
   const out = new Map();
   const walk = (d, depth) => {
     if (depth > 8) return;
     let entries;
-    try {
-      entries = fs.readdirSync(d, { withFileTypes: true });
-    } catch {
-      return;
-    }
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const ent of entries) {
       const name = ent.name;
       if (ent.isDirectory()) {
         if (name.startsWith('.') || name === 'node_modules' || name === 'build' || name === 'out') continue;
         const fp = path.join(d, name).replace(/\\/g, '/');
-        // 目录的 mtime 会随内部增删而变化，这里固定为 0，
-        // 目录只参与「出现 / 消失」判断，不参与「内容修改」判断
         out.set(fp, { mtimeMs: 0, size: 0, isDirectory: true });
         walk(path.join(d, name), depth + 1);
       } else if (ent.isFile()) {
-        if (path.extname(ent.name).toLowerCase() === '.exe') continue; // 编译产物不跟踪
+        if (path.extname(ent.name).toLowerCase() === '.exe') continue;
         const fp = path.join(d, name).replace(/\\/g, '/');
         try {
           const st = fs.statSync(path.join(d, name));
@@ -301,6 +292,13 @@ function setsEqual(a, b) {
   return true;
 }
 
+// ── 文件监听：原生 fs.watch recursive（Electron 41 / Node 22+ 支持）──
+// fs.watch 事件不提供 mtime/size，需要 statSync 补充；新增 / 删除 / 修改
+// 通过对比前后快照判定（与旧轮询逻辑兼容）。debounce 防止高频事件风暴。
+
+const WATCH_DEBOUNCE_MS = 200;
+const WATCH_SOURCE_EXTS = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh', '.m', '.mm']);
+
 function watchProject() {
   stopProjectWatcher();
   const dir = projectPath;
@@ -308,42 +306,90 @@ function watchProject() {
     emitLog('[watcher] skip, dir=' + dir);
     return;
   }
-  const snapshot = snapshotProjectFiles(dir);
+  let snapshot = snapshotProjectFiles(dir);
   writeCompileCommands(dir);
-  projectWatcher = {
-    snapshot,
-    timer: setInterval(() => {
-      const next = snapshotProjectFiles(dir);
-      if (setsEqual(next, projectWatcher.snapshot)) return;
-      const added = [];
-      const removed = [];
-      const modified = [];
-      for (const [p, info] of next) {
-        const prev = projectWatcher.snapshot.get(p);
-        if (!prev) added.push({ path: p, isDirectory: !!info.isDirectory });
-        else if (prev.mtimeMs !== info.mtimeMs || prev.size !== info.size) modified.push({ path: p, isDirectory: !!info.isDirectory });
-      }
-      for (const p of projectWatcher.snapshot.keys()) {
-        if (!next.has(p)) {
-          const prevInfo = projectWatcher.snapshot.get(p);
-          removed.push({ path: p, isDirectory: !!(prevInfo && prevInfo.isDirectory) });
-        }
-      }
-      projectWatcher.snapshot = next;
-      // 仅当编译单元集合变化时才需要重建编译数据库（.h 变化不影响）
-      const sourceExts = new Set(SOURCE_EXTS);
-      const hasSourceChange = [...added, ...removed, ...modified].some((f) =>
-        sourceExts.has(path.extname(typeof f === 'object' ? f.path : f).toLowerCase())
-      );
-      if (hasSourceChange) writeCompileCommands(dir);
-      emitToRenderer('lsp:project-changed', {
-        projectDir: dir,
-        added,
-        removed,
-        modified,
-      });
-    }, 1000),
+
+  let debounceTimer = null;
+
+  const flushChanges = () => {
+    debounceTimer = null;
+    const next = snapshotProjectFiles(dir);
+    const added = [];
+    const removed = [];
+    const modified = [];
+
+    for (const [p, info] of next) {
+      const prev = snapshot.get(p);
+      if (!prev) added.push({ path: p, isDirectory: !!info.isDirectory });
+      else if (prev.mtimeMs !== info.mtimeMs || prev.size !== info.size) modified.push({ path: p, isDirectory: !!info.isDirectory });
+    }
+    for (const [p, prevInfo] of snapshot) {
+      if (!next.has(p)) removed.push({ path: p, isDirectory: !!(prevInfo && prevInfo.isDirectory) });
+    }
+    snapshot = next;
+    if (projectWatcher) projectWatcher.snapshot = snapshot;
+
+    if (!added.length && !removed.length && !modified.length) return;
+
+    const sourceExts = new Set(WATCH_SOURCE_EXTS);
+    const hasSourceChange = [...added, ...removed, ...modified].some((f) =>
+      sourceExts.has(path.extname(typeof f === 'object' ? f.path : f).toLowerCase())
+    );
+    if (hasSourceChange) writeCompileCommands(dir);
+    emitToRenderer('lsp:project-changed', { projectDir: dir, added, removed, modified });
   };
+
+  let watcher;
+  try {
+    watcher = fs.watch(dir, { recursive: true }, (eventType, filename) => {
+      if (!filename) return;
+      const ext = path.extname(filename).toLowerCase();
+      if (ext === '.exe' || ext === '.o' || ext === '.tmp' || ext === '.swp') return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(flushChanges, WATCH_DEBOUNCE_MS);
+    });
+  } catch (err) {
+    emitLog('[watcher] fs.watch failed: ' + err.message + ', falling back to polling');
+    watchProjectPolling(dir, snapshot, writeCompileCommands, emitToRenderer);
+    return;
+  }
+
+  watcher.on('error', (err) => {
+    emitLog('[watcher] error: ' + err.message);
+  });
+
+  projectWatcher = { watcher, snapshot, debounceTimer: null };
+}
+
+function watchProjectPolling(dir, initialSnapshot, writeFn, emitFn) {
+  let snapshot = initialSnapshot;
+  const timer = setInterval(() => {
+    const next = snapshotProjectFiles(dir);
+    if (setsEqual(next, snapshot)) return;
+    const added = [];
+    const removed = [];
+    const modified = [];
+    for (const [p, info] of next) {
+      const prev = snapshot.get(p);
+      if (!prev) added.push({ path: p, isDirectory: !!info.isDirectory });
+      else if (prev.mtimeMs !== info.mtimeMs || prev.size !== info.size) modified.push({ path: p, isDirectory: !!info.isDirectory });
+    }
+    for (const p of snapshot.keys()) {
+      if (!next.has(p)) {
+        const prevInfo = snapshot.get(p);
+        removed.push({ path: p, isDirectory: !!(prevInfo && prevInfo.isDirectory) });
+      }
+    }
+    snapshot = next;
+    if (projectWatcher) projectWatcher.snapshot = snapshot;
+    const sourceExts = new Set(WATCH_SOURCE_EXTS);
+    const hasSourceChange = [...added, ...removed, ...modified].some((f) =>
+      sourceExts.has(path.extname(typeof f === 'object' ? f.path : f).toLowerCase())
+    );
+    if (hasSourceChange) writeFn(dir);
+    emitFn('lsp:project-changed', { projectDir: dir, added, removed, modified });
+  }, 1000);
+  projectWatcher = { snapshot, timer };
 }
 
 // 应用自身写入文件后，同步更新 watcher 快照，避免下一轮轮询误报「内容修改」。
@@ -364,7 +410,12 @@ function updateSnapshotEntry(filePath) {
 
 function stopProjectWatcher() {
   if (projectWatcher) {
-    clearInterval(projectWatcher.timer);
+    if (projectWatcher.watcher) {
+      projectWatcher.watcher.close();
+    }
+    if (projectWatcher.timer) {
+      clearInterval(projectWatcher.timer);
+    }
     projectWatcher = null;
   }
 }
@@ -814,8 +865,7 @@ function setupFileIpc() {
       const resolved = path.resolve(filePath);
       const buf = await fs.promises.readFile(resolved);
       const ext = path.extname(resolved).toLowerCase();
-      const image = IMAGE_EXTS.has(ext);
-      let binary = image;
+      let binary = IMAGE_EXTS.has(ext);
       if (!binary) {
         // 经典启发式：存在 NUL 字节视为二进制
         for (let i = 0; i < buf.length; i++) {

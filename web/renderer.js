@@ -2837,6 +2837,10 @@ function showEmptyState() {
 
 function activateTab(tab) {
   const prev = activeTab();
+  // 切走前保存当前标签的视图状态（光标 + 滚动位置）
+  if (prev && prev.kind === 'text' && prev.model && editor.getModel() === prev.model) {
+    prev.viewState = editor.saveViewState();
+  }
   activeTabId = tab.id;
   const host = document.getElementById('fileview');
   const econt = document.getElementById('editor');
@@ -2851,6 +2855,10 @@ function activateTab(tab) {
       econt.style.visibility = 'visible';
     }
     editor.setModel(tab.model);
+    // 恢复上次离开时的光标和滚动位置
+    if (tab.viewState) {
+      editor.restoreViewState(tab.viewState);
+    }
     if (editor.layout) editor.layout();
     if (!tab.restoring) editor.focus();
   } else {
@@ -3260,10 +3268,16 @@ const EMPTY_SEMANTIC_TOKENS = { data: new Uint32Array(0) };
 // 在 detach 时直接 dispose，会导致 setModel(m) 抛出「Model is disposed!」。
 // 改为通过 semanticHighlighting 开关切换触发 onDidChangeConfiguration，
 // 让 Monaco 重新注册模型观察者并重新拉取语义 token。
+let refreshSemTimer = null;
 function refreshSemanticTokens() {
   if (!editor) return;
-  editor.updateOptions({ 'semanticHighlighting.enabled': false });
-  editor.updateOptions({ 'semanticHighlighting.enabled': true });
+  if (refreshSemTimer) clearTimeout(refreshSemTimer);
+  refreshSemTimer = setTimeout(() => {
+    refreshSemTimer = null;
+    if (!editor) return;
+    editor.updateOptions({ 'semanticHighlighting.enabled': false });
+    editor.updateOptions({ 'semanticHighlighting.enabled': true });
+  }, 300);
 }
 
 let semanticHighlightingRegistered = false;
@@ -4029,7 +4043,6 @@ function init() {
         changes: [{ uri: 'file:///' + compileDbPath.replace(/\\/g, '/'), type: 2 }],
       });
     }
-    scheduleChange();
     refreshSemanticTokens();
   });
 
@@ -4059,18 +4072,30 @@ function init() {
         changes,
       });
     }
-    // clangd 收到 watcher 事件后不会主动重新诊断已打开的文档，
-    // 这里再对当前文档发一次 didChange，强制其重新解析并立即更新诊断
-    scheduleChange();
   });
 
     // Ctrl+S / Cmd+S 保存文件
-  // Delete：capture phase 确保在 Monaco 之前拦截
+  // Delete / Ctrl+C/V/X：capture phase 确保在 Monaco 之前拦截
   document.addEventListener('keydown', (e) => {
-    if (fileTreeFocused && (e.key === 'Delete' || e.key === 'Del')) {
+    if (!fileTreeFocused) return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (e.key === 'Delete' || e.key === 'Del') {
       e.preventDefault();
       e.stopPropagation();
       deleteSelectedTreePaths();
+    } else if (mod && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault();
+      e.stopPropagation();
+      copySelected();
+    } else if (mod && !e.shiftKey && !e.altKey && (e.key === 'x' || e.key === 'X')) {
+      e.preventDefault();
+      e.stopPropagation();
+      cutSelected();
+    } else if (mod && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = pasteTargetDir();
+      if (dir) pasteToDir(dir);
     }
   }, true);
   window.addEventListener('keydown', (e) => {
