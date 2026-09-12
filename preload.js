@@ -145,6 +145,9 @@ contextBridge.exposeInMainWorld('editorAPI', {
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (patch) => ipcRenderer.invoke('settings:save', patch),
 
+  // 桌面端无系统栏预留区，主题切换已由 renderer.js 的 CSS 完成，无需原生联动。
+  updateThemeColors: () => {},
+
   // 订阅设置变更（设置窗口保存后，主窗口据此即时应用外观等）。返回取消订阅函数。
   onSettingsChanged: (callback) => {
     const listener = (_event, settings) => callback(settings);

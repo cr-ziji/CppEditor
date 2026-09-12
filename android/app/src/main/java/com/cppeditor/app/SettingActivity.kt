@@ -32,10 +32,12 @@ class SettingActivity : ComponentActivity() {
             val settings = JSONObject(Services.settings.load())
             settings.optJSONObject("editor")?.optString("theme", "dark") ?: "dark"
         } catch (_: Exception) { "dark" }
-        val bgColor = if (theme == "light") 0xFFFAFAFA.toInt() else 0xFF1E1E1E.toInt()
+        val bgColor = themeBackgroundColor(theme)
         webView.setBackgroundColor(bgColor)
-        window.decorView.setBackgroundColor(bgColor)
         setContentView(webView)
+        applyThemeBackground(theme)
+        applySystemBarInsets()
+        disableSystemBarContrastScrim()
 
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -74,6 +76,11 @@ class SettingActivity : ComponentActivity() {
             when (method) {
                 "loadSettings" -> resolve(callbackId, Services.settings.load())
                 "saveSettings" -> resolve(callbackId, Services.saveSettings(args.optJSONObject(0)))
+                "updateThemeColors" -> {
+                    val theme = args.optString(0, "dark")
+                    runOnUiThread { applyThemeBackground(theme) }
+                    resolve(callbackId, "{}")
+                }
                 "closeSettingWindow" -> finish()
                 else -> resolve(callbackId, errObject("未知方法: $method"))
             }

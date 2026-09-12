@@ -65,6 +65,7 @@
       closeWindow: function () {},
       openSettingWindow: function () {},
       closeSettingWindow: function () {},
+      updateThemeColors: function () {},
       loadSettings: function () { return Promise.resolve({}); },
       saveSettings: function () { return Promise.resolve({}); },
       onSettingsChanged: function (cb) { return function () {}; },
@@ -177,6 +178,7 @@
     closeWindow: function () { send('closeWindow'); },
     openSettingWindow: function () { send('openSettingWindow'); },
     closeSettingWindow: function () { send('closeSettingWindow'); },
+    updateThemeColors: function (theme) { send('updateThemeColors', theme); },
 
     loadSettings: function () { return invoke('loadSettings'); },
     saveSettings: function (patch) { return invoke('saveSettings', patch); },

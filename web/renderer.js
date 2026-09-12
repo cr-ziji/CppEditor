@@ -4032,6 +4032,10 @@ function init() {
     if (s && s.editor) appSettings = s;
     applyEditorSettings();
     applyFileTreeWidth(appSettings.editor && appSettings.editor.fileTreeWidth);
+    // 移动端：通知原生同步系统栏预留区背景色与状态栏图标明暗
+    if (s && s.editor && s.editor.theme) {
+      window.editorAPI.updateThemeColors(s.editor.theme);
+    }
   });
 
   // compile_commands.json 已重建：clangd 会自动监听该文件变化，这里立即发

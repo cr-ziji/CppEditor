@@ -147,6 +147,13 @@
         applyAppTheme(getField('themeMode').value);
     });
 
+    // 设置保存后（含本窗口自身的修改）同步原生系统栏预留区配色与图标明暗
+    window.editorAPI.onSettingsChanged((s) => {
+        if (s && s.editor && s.editor.theme) {
+            window.editorAPI.updateThemeColors(s.editor.theme);
+        }
+    });
+
     // 移动端：快捷键面板切换为手势说明
     if (window.AndroidBridge) {
         document.getElementById('shortcuts-heading').textContent = '操作说明';

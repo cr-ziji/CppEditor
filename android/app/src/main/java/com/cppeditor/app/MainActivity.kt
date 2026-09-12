@@ -95,15 +95,17 @@ class MainActivity : ComponentActivity() {
             val settings = JSONObject(Services.settings.load())
             settings.optJSONObject("editor")?.optString("theme", "dark") ?: "dark"
         } catch (_: Exception) { "dark" }
-        val bgColor = if (theme == "light") 0xFFFAFAFA.toInt() else 0xFF1E1E1E.toInt()
+        val bgColor = themeBackgroundColor(theme)
         webView.setBackgroundColor(bgColor)
-        window.decorView.setBackgroundColor(bgColor)
 
         // 屏蔽 WebView 原生长按文本弹出的系统选择菜单（英文 Copy/Share 等）。
         // 编辑器 / 文件树的长按菜单由 JS 侧自行实现，避免两个菜单叠加。
         webView.setOnLongClickListener { true }
         webView.isHapticFeedbackEnabled = false
         setContentView(webView)
+        applyThemeBackground(theme)
+        applySystemBarInsets()
+        disableSystemBarContrastScrim()
 
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -196,6 +198,11 @@ class MainActivity : ComponentActivity() {
             }
             "loadSettings" -> resolve(callbackId, Services.settings.load())
             "saveSettings" -> resolve(callbackId, Services.saveSettings(args.optJSONObject(0)))
+            "updateThemeColors" -> {
+                val theme = args.optString(0, "dark")
+                runOnUiThread { applyThemeBackground(theme) }
+                resolve(callbackId, "{}")
+            }
             "minimizeWindow" -> moveTaskToBack(true)
             "maximizeWindow", "unmaximizeWindow" -> { /* 移动端无需窗口控制 */ }
             "closeWindow" -> finish()
