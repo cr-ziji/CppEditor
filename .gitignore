@@ -14,3 +14,5 @@ android/build
 android/app/build
 android/app/src/main/assets/toolchain
 android/local.properties
+
+temp

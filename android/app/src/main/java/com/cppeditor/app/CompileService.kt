@@ -33,14 +33,14 @@ class CompileService(
         val exe = File(f.parentFile, f.nameWithoutExtension)
         exe.delete()
 
-        val compiler = if (isC) toolchain.binary("gcc")?.absolutePath ?: "gcc"
-                       else toolchain.binary("g++")?.absolutePath ?: "g++"
+        val compiler = if (isC) toolchain.binary("gcc-16")?.absolutePath ?: "gcc"
+                       else toolchain.binary("g++-16")?.absolutePath ?: "g++"
         val objFile = File(f.parentFile, f.nameWithoutExtension + ".o")
         val env = toolchain.runEnv()
 
         // ── 第 1 步：编译到 .o ──
         val cArgs = mutableListOf<String>()
-        cArgs += toolchain.clangFlags()
+        cArgs += toolchain.compileFlags()
         cArgs += compileArgs(isC, settings)
         cArgs += f.absolutePath
         cArgs += "-c"
@@ -49,7 +49,10 @@ class CompileService(
 
         val compileRes = runProcess(compiler, cArgs, f.parentFile, env)
         Log.i("CompileService", "compile step code=${compileRes.code}")
+        Log.i("CompileService", "compile cmd: $compiler args=$cArgs")
         if (compileRes.code != 0 || !objFile.isFile) {
+            Log.e("CompileService", "compile stderr: ${compileRes.err.take(4000)}")
+            Log.e("CompileService", "compile stdout: ${compileRes.out.take(2000)}")
             resolve(callbackId, JSONObject()
                 .put("ok", false).put("stage", "compile")
                 .put("stderr", compileRes.err).put("stdout", compileRes.out).toString())
@@ -71,6 +74,7 @@ class CompileService(
         linkArgs += "--sysroot=${toolchain.usr.absolutePath}"
         linkArgs += "-L${toolchain.usr.absolutePath}/lib"
         toolchain.nativeLibDir?.let { linkArgs += "-L${it.absolutePath}" }
+        toolchain.gccLibDir()?.let { linkArgs += "-L${it.absolutePath}" }
         if (toolchain.abi == ToolchainService.Abi.ARM32) linkArgs += "-L/system/lib"
         else linkArgs += "-L/system/lib64"
         val usrLib = File(toolchain.usr, "lib")

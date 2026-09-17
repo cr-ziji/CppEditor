@@ -15,9 +15,9 @@ import java.io.File
  */
 class ToolchainService(private val ctx: Context) {
 
-    enum class Abi(val zipAsset: String, val target: String, val isystemDir: String) {
-        ARM64("toolchain-arm64-v8a.zip", "aarch64-linux-android", "aarch64-linux-android"),
-        ARM32("toolchain-armeabi-v7a.zip", "armv7a-linux-androideabi", "arm-linux-androideabi");
+    enum class Abi(val zipAsset: String, val target: String, val isystemDir: String, val gccTriple: String) {
+        ARM64("toolchain-arm64-v8a.zip", "aarch64-linux-android", "aarch64-linux-android", "aarch64-linux-android"),
+        ARM32("toolchain-armeabi-v7a.zip", "armv7a-linux-androideabi", "arm-linux-androideabi", "arm-linux-androideabi");
 
         fun matches(deviceAbi: String): Boolean =
             (this == ARM64 && deviceAbi == "arm64-v8a") ||
@@ -67,6 +67,8 @@ class ToolchainService(private val ctx: Context) {
         "clang-21" to "libclang21.so",
         "gcc" to "libgcc.so",
         "g++" to "libgpp.so",
+        "gcc-16" to "libgcc16.so",
+        "g++-16" to "libgpp16.so",
         "lld" to "liblld.so",
         "ld.lld" to "libldlld.so",
         "ld" to "liblld.so",
@@ -90,6 +92,7 @@ class ToolchainService(private val ctx: Context) {
      */
     fun ensureExtracted(onDone: (Boolean) -> Unit = {}) {
         if (ready()) {
+            linkNativeSubprograms()
             onDone(true)
             return
         }
@@ -98,6 +101,9 @@ class ToolchainService(private val ctx: Context) {
                 unzipAssets { done -> if (done % 25 == 0) postToolchain("toolchain:progress", """{"done":$done}""") }
                 applyLinkmap()
                 makeExecutable()
+                linkNativeSubprograms()
+                fixGccSpecs()
+                writeGccCompatHeader()
                 fixBuiltinLibs()
                 verifyExtracted()
             }.getOrDefault(false)
@@ -118,6 +124,9 @@ class ToolchainService(private val ctx: Context) {
                 unzipAssets { done -> if (done % 25 == 0) postToolchain("toolchain:progress", """{"done":$done}""") }
                 applyLinkmap()
                 makeExecutable()
+                linkNativeSubprograms()
+                fixGccSpecs()
+                writeGccCompatHeader()
                 fixBuiltinLibs()
                 verifyExtracted()
             }.getOrDefault(false)
@@ -167,11 +176,15 @@ class ToolchainService(private val ctx: Context) {
             val target = map.optString(link)
             val src = File(root, target)
             val dst = File(root, link)
-            if (!src.isFile || dst.exists()) continue
+            if (!src.isFile || dst.exists()) {
+                Log.i("ToolchainService", "applyLinkmap skip: $link (srcIsFile=${src.isFile} dstExists=${dst.exists()})")
+                continue
+            }
             runCatching {
                 dst.parentFile?.mkdirs()
                 src.copyTo(dst)
-            }
+                Log.i("ToolchainService", "applyLinkmap copied: $link <- $target")
+            }.onFailure { e -> Log.e("ToolchainService", "applyLinkmap failed: $link <- $target: ${e.message}") }
         }
     }
 
@@ -262,10 +275,106 @@ class ToolchainService(private val ctx: Context) {
 
     fun clangdReady(): Boolean = clangdPath() != null
 
+    companion object GccV {
+        const val GCC_VERSION = "16.1.0"
+    }
+
+    /** gcc lib 目录（specs / cc1plus / libgcc.a / crt 对象 所在） */
+    fun gccLibDir(): File? {
+        val dir = File(usr, "lib/gcc/${abi.gccTriple}/$GCC_VERSION")
+        return if (dir.isDirectory) dir else null
+    }
+
+    /** gcc 的子程序（cc1/cc1plus/collect2）目录 */
+    fun gccExecDir(): File? {
+        val dir = File(usr, "libexec/gcc/${abi.gccTriple}/$GCC_VERSION")
+        return if (dir.isDirectory) dir else null
+    }
+
+    /**
+     * g++-16 编译标志（与 clangFlags() 不同：无 --target / -resource-dir，
+     * cc1/cc1plus/as 已复制到 nativeLibDir（apk_data_file，SELinux 可 exec），
+     * 用 -B 指向 nativeLibDir 让 gcc driver 找到它们；-D__ANDROID_API__ 指定 API）。
+     */
+    fun compileFlags(): List<String> {
+        val flags = mutableListOf<String>()
+        fun pushIsystem(dir: File) {
+            if (dir.isDirectory) {
+                flags += "-isystem"
+                flags += dir.absolutePath
+            }
+        }
+        val inc = File(usr, "include")
+        pushIsystem(File(inc, "c++/v1"))
+        pushIsystem(File(inc, abi.isystemDir))
+        pushIsystem(inc)
+        flags += "-D__ANDROID_API__=24"
+        // bionic 头是 clang 专用，GCC 需 force-include 兼容头置空 clang 专属宏
+        val compat = File(inc, "gcc_compat.h")
+        if (compat.isFile) {
+            flags += "-include"
+            flags += compat.absolutePath
+        }
+        // 子程序（cc1/cc1plus/as）在 nativeLibDir 才可执行（untrusted_app 域对 apk_data_file 有 execute_no_trans，
+        // 对 app_data_file 没有），-B 让 driver 从 nativeLibDir 找到它们
+        val native = nativeLibDir
+        if (native != null && File(native, "cc1plus").isFile) {
+            flags += "-B${native.absolutePath}"
+        }
+        return flags
+    }
+
     fun clangReady(): Boolean = binary("clang") != null && binary("clang++") != null
 
-    /** gcc/g++（工具链内为 clang 的 gcc 兼容入口）是否可用 */
+    /** gcc/g++（linkmap 物化后为真 GCC 的 gcc-16/g++-16）是否可用 */
     fun compilerReady(): Boolean = binary("gcc") != null && binary("g++") != null
+
+    /** bionic/NDK 头是 clang 专用（_Nonnull/__INTRODUCED_IN 等），GCC 编译需兼容头置空这些宏 */
+    private val gccCompatHeader =
+        "/* Generated by CppEditor: neutralize clang-only constructs for GCC */\n" +
+        "#pragma once\n" +
+        "#if defined(__BIONIC__) || defined(__ANDROID__)\n" +
+        "#include <android/versioning.h>\n" +
+        "#endif\n" +
+        "#undef __BIONIC_AVAILABILITY\n#define __BIONIC_AVAILABILITY(...)\n" +
+        "#undef __BIONIC_AVAILABILITY_GUARD\n#define __BIONIC_AVAILABILITY_GUARD(api_level) 1\n" +
+        "#undef __INTRODUCED_IN\n#define __INTRODUCED_IN(api_level)\n" +
+        "#undef __DEPRECATED_IN\n#define __DEPRECATED_IN(api_level, msg)\n" +
+        "#undef __REMOVED_IN\n#define __REMOVED_IN(api_level, msg)\n" +
+        "#undef __INTRODUCED_IN_32\n#define __INTRODUCED_IN_32(api_level)\n" +
+        "#undef __INTRODUCED_IN_64\n#define __INTRODUCED_IN_64(api_level)\n" +
+        "#undef __DEPRECATED_IN_32\n#define __DEPRECATED_IN_32(api_level, msg)\n" +
+        "#undef __DEPRECATED_IN_64\n#define __DEPRECATED_IN_64(api_level, msg)\n" +
+        "#undef __REMOVED_IN_32\n#define __REMOVED_IN_32(api_level, msg)\n" +
+        "#undef __REMOVED_IN_64\n#define __REMOVED_IN_64(api_level, msg)\n" +
+        "#undef __clang_error_if\n#define __clang_error_if(cond, msg)\n" +
+        "#undef __clang_warning_if\n#define __clang_warning_if(cond, msg)\n" +
+        "#undef __pass_object_size_n\n#define __pass_object_size_n(n)\n" +
+        "#undef __pass_object_size\n#define __pass_object_size __pass_object_size_n(0)\n" +
+        "#undef __pass_object_size0\n#define __pass_object_size0\n" +
+        "#undef __enable_if\n#define __enable_if(cond, msg)\n" +
+        "#undef __prefer_this_overload\n#define __prefer_this_overload\n" +
+        "#ifndef __clang__\n#define _Nonnull\n#define _Nullable\n#define _Null_unspecified\n#endif\n"
+
+    private fun writeGccCompatHeader() {
+        if (!usr.isDirectory) return
+        val f = File(usr, "include/gcc_compat.h")
+        runCatching {
+            f.writeText(gccCompatHeader)
+            Log.i("ToolchainService", "wrote gcc_compat.h (${f.length()} bytes)")
+        }.onFailure { Log.e("ToolchainService", "write gcc_compat.h failed: ${it.message}") }
+    }
+
+    /** 将 specs 文件中的 __TC__ 占位符替换为实际工具链 usr 路径（运行时修正） */
+    private fun fixGccSpecs() {
+        val gccDir = gccLibDir() ?: return
+        val specsFile = File(gccDir, "specs")
+        if (!specsFile.isFile) return
+        val content = specsFile.readText()
+        if (!content.contains("__TC__")) return
+        specsFile.writeText(content.replace("__TC__", usr.absolutePath))
+        Log.i("ToolchainService", "fixed gcc specs: __TC__ -> ${usr.absolutePath}")
+    }
 
     /** clangd 兜底编译参数：sysroot + 头文件搜索路径 + 目标平台 */
     fun clangFlags(): List<String> {
@@ -304,12 +413,25 @@ class ToolchainService(private val ctx: Context) {
             val sysPath = System.getenv("PATH").orEmpty()
             if (sysPath.isNotEmpty()) append(":").append(sysPath)
         }
-        return mapOf(
-            "LD_LIBRARY_PATH" to if (nativeLib.isNotEmpty()) "$lib:$nativeLib" else lib,
+        val gccDir = gccLibDir()
+        val ldPath = buildString {
+            append(lib)
+            if (gccDir != null) append(":").append(gccDir.absolutePath)
+            if (nativeLib.isNotEmpty()) append(":").append(nativeLib)
+        }
+        val env = mutableMapOf<String, String>(
+            "LD_LIBRARY_PATH" to ldPath,
             "PATH" to path,
             "HOME" to ctx.filesDir.absolutePath,
             "TMPDIR" to tmp.absolutePath,
         )
+        if (gccDir != null) {
+            // GCC_EXEC_PREFIX={usr}/lib/gcc/ 让 gcc driver 找 specs 时命中
+            // {GCC_EXEC_PREFIX}{machine}/{version}/specs == <usr>/lib/gcc/<triple>/<ver>/specs。
+            // （cc1/cc1plus/collect2 由 applyLinkmap 物化到 usr/bin，靠 PATH 里的 usr/bin 由 execvp 命中）
+            env["GCC_EXEC_PREFIX"] = File(usr, "lib/gcc").absolutePath + "/"
+        }
+        return env
     }
 
     private fun makeExecutable() {
@@ -317,5 +439,51 @@ class ToolchainService(private val ctx: Context) {
         if (bin.isDirectory) bin.listFiles()?.forEach { it.setExecutable(true, false) }
         val lib = File(usr, "lib")
         if (lib.isDirectory) lib.listFiles()?.forEach { if (it.name.endsWith(".so")) it.setExecutable(true, false) }
+        // gcc 子程序（cc1/cc1plus/collect2）在 libexec 下，copyTo 物化后无执行位；
+        // 若 driver 经 -B/GCC_EXEC_PREFIX 直接命中会 execvp Permission denied，故补齐执行位
+        val libexec = File(usr, "libexec/gcc")
+        if (libexec.isDirectory) {
+            libexec.walkTopDown().filter { it.isFile }.forEach { it.setExecutable(true, false) }
+        }
+    }
+
+    /**
+     * nativeLibDir 仅提取 .so；gcc 需要 exec cc1/cc1plus/as（按裸名）。
+     * 在 usr/bin 建符号链接指向 nativeLibDir 里的 libcc1.so/libcc1plus.so/libas.so，
+     * 目标为 apk_data_file（untrusted_app 有 execute_no_trans，可 exec）。
+     * 同时删除 libexec 下的同名实体：GCC 在 exec_prefixes（含 libexec/gcc/...，
+     * app_data_file）里找到 cc1/cc1plus 会优先于 PATH 使用 → execv Permission denied；
+     * 删掉后 driver 只能 fallback 到 PATH → usr/bin symlink → native（可 exec）。
+     */
+    private fun linkNativeSubprograms() {
+        val native = nativeLibDir ?: return
+        val bin = File(usr, "bin")
+        val tripleDir = gccExecDir()
+        val pairs = mapOf(
+            "cc1" to "libcc1.so",
+            "cc1plus" to "libcc1plus.so",
+            "as" to "libas.so",
+        )
+        for ((name, lib) in pairs) {
+            // 删除 libexec 实体，迫使 driver fallback 到 PATH（usr/bin symlink）
+            if (tripleDir != null) {
+                for (prefix in listOf(tripleDir.absolutePath, gccLibDir()?.absolutePath.orEmpty())) {
+                    if (prefix.isNotEmpty()) {
+                        val dead = File(prefix, name)
+                        if (dead.isFile) runCatching { dead.delete() }
+                    }
+                }
+                runCatching { File(File(usr, "libexec/gcc"), "${abi.gccTriple}/${GCC_VERSION}/$name").delete() }
+            }
+            val target = File(native, lib)
+            if (!target.isFile) continue
+            if (!bin.isDirectory) continue
+            val link = File(bin, name)
+            runCatching {
+                if (link.exists()) link.delete()
+                android.system.Os.symlink(target.absolutePath, link.absolutePath)
+                Log.i("ToolchainService", "symlink $name -> ${target.absolutePath}")
+            }.onFailure { Log.e("ToolchainService", "symlink $name failed: ${it.message}") }
+        }
     }
 }
