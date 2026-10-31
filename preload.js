@@ -73,8 +73,8 @@ contextBridge.exposeInMainWorld('editorAPI', {
   treePaste: (destDir) => ipcRenderer.invoke('filetree:paste', destDir),
   // 重命名；返回 { ok, oldPath, newPath, isDirectory } 或 { ok:false, message }。
   treeRename: (oldPath, newName) => ipcRenderer.invoke('filetree:rename', oldPath, newName),
-  // 删除（移入回收站）；返回 { ok, results }。
-  treeDelete: (paths) => ipcRenderer.invoke('filetree:delete', paths),
+  // 删除；opts.permanent=true 时永久删除，否则移入回收站（缺省由主进程按设置判定）。返回 { ok, results }。
+  treeDelete: (paths, opts) => ipcRenderer.invoke('filetree:delete', paths, opts),
   // 在资源管理器中定位；返回 { ok }。
   treeReveal: (filePath) => ipcRenderer.invoke('filetree:reveal', filePath),
   // 用系统默认关联应用打开文件；返回 { ok }。
@@ -130,6 +130,10 @@ contextBridge.exposeInMainWorld('editorAPI', {
     ipcRenderer.on('file:open-external', listener);
     return () => ipcRenderer.removeListener('file:open-external', listener);
   },
+
+  // 渲染端就绪信号。桌面端外部文件经 IPC 订阅式投递（无待定队列问题），
+  // 此处为空实现桩；Android 冷启动补投缓存的外部打开文件时才真正用到。
+  markExternalReady: () => {},
 
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),

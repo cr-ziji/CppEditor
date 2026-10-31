@@ -1,7 +1,7 @@
 {
   "name": "CppEditor",
   "version": "1.0.0",
-  "description": "更现代的c++编辑器",
+  "description": "更现代的C++编辑器",
   "main": "main.js",
   "author": "cyp",
   "license": "GNUV3",

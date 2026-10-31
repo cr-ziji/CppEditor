@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -21,6 +22,10 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private var bridge: JsBridge? = null
+
+    /** 「打开方式」传入的外部文件路径（content:// 已复制到 cacheDir）；渲染端 external:ready 后就绪时投递 */
+    private var pendingOpenPath: String? = null
+    private var jsStartupCallSeen = false
 
     private val dirPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         Services.files.onFolderPicked(uri)
@@ -122,6 +127,15 @@ class MainActivity : ComponentActivity() {
         webView.addJavascriptInterface(bridge("main"), "AndroidBridge")
 
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html?theme=$theme")
+
+        // 冷启动时由「打开方式」直接拉起：页面加载完成后随首批 JS 调用投递文件
+        handleOpenFileIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOpenFileIntent(intent)
     }
 
     override fun onResume() {
@@ -149,7 +163,59 @@ class MainActivity : ComponentActivity() {
         if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
     }
 
+    // --- 「打开方式」外部文件 ---------------------------------------------------
+
+    /** 解析 intent 中的文件 URI（content:// 复制到 cacheDir），暂存并在渲染器就绪后投递 */
+    private fun handleOpenFileIntent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        val path = resolveOpenFileUri(uri) ?: return
+        pendingOpenPath = path
+        attemptDeliverOpenFile()
+    }
+
+    private fun resolveOpenFileUri(uri: Uri): String? {
+        return when (uri.scheme) {
+            "file" -> uri.path?.let { p -> if (java.io.File(p).isFile) p else null }
+            "content" -> copyOpenFileToCache(uri)
+            else -> null
+        }
+    }
+
+    private fun copyOpenFileToCache(uri: Uri): String? {
+        return try {
+            val target = java.io.File(cacheDir, openFileName(uri))
+            contentResolver.openInputStream(uri)?.use { ins ->
+                java.io.FileOutputStream(target).use { outs -> ins.copyTo(outs) }
+            } ?: return null
+            target.absolutePath
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun openFileName(uri: Uri): String {
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
+        return name?.takeIf { it.isNotBlank() && !it.contains('/') && !it.contains('\\') }
+            ?: "open_${System.currentTimeMillis()}"
+    }
+
+    /** 仅在确认渲染器已就绪（external:ready 上报后）投递，避免事件在启动早期被丢弃 */
+    private fun attemptDeliverOpenFile() {
+        val path = pendingOpenPath ?: return
+        if (!jsStartupCallSeen) return
+        pendingOpenPath = null
+        EventBus.post("file:open-external", JSONStr.quote(path))
+    }
+
     private fun bridge(scope: String): JsBridge {
+        // 渲染端就绪信号由 renderer.js init() 末尾的 markExternalReady() 显式上报
+        // （external:ready 方法）。不再用「首次 JS 调用」判定：首次调用可能是
+        // 脚本预加载时就发出的 loadSettings 等，早于 file:open-external 监听注册，
+        // 会导致冷启动外部文件被提前投递而丢失。
         val b = JsBridge(scope) { method, args, callbackId, resolve ->
             handle(method, args, callbackId, resolve)
         }
@@ -164,6 +230,12 @@ class MainActivity : ComponentActivity() {
         val clangd = Services.clangd
         when (method) {
             "start" -> resolve(callbackId, clangd.start().toString())
+            // 渲染端就绪信号：init() 已注册 file:open-external 监听后发送。
+            // 冷启动时把缓存的外部打开文件经 file:open-external 补投一次。
+            "external:ready" -> {
+                jsStartupCallSeen = true
+                attemptDeliverOpenFile()
+            }
             "stop" -> clangd.stop()
             "send" -> {
                 val msg = args.optJSONObject(0)

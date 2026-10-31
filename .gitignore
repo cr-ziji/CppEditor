@@ -13,4 +13,8 @@ android/.idea
 android/build
 android/app/build
 android/app/src/main/assets/toolchain
+android/app/src/main/assets/toolchain-*.zip
 android/local.properties
+
+temp
+test

@@ -80,6 +80,7 @@ class SettingsService(private val ctx: Context) {
             .put("fontSize", 14)
             .put("fileTreeFontSize", 14)
             .put("fileTreeWidth", 300)
+            .put("defaultNewFileType", "cpp")
         val compile = JSONObject()
             .put("languageStandardCpp", "c++17")
             .put("languageStandardC", "c11")

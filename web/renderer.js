@@ -438,7 +438,7 @@ async function saveFile() {
   }
   try {
     if (!tab.path) {
-      const result = await window.editorAPI.saveAs(tab.model.getValue(), '未命名');
+      const result = await window.editorAPI.saveAs(tab.model.getValue(), tab.name || '未命名');
       if (!result || result.cancelled) return;
       if (!result.ok) {
         showSaveStatus(result.message || '保存失败', true);
@@ -677,8 +677,9 @@ function syncActiveDoc() {
     } catch { /* ignore */ }
     lsp.lastDocUri = null;
   }
-  // 仅 C/C++ 文档注册给 clangd，其他语言不参与 LSP
-  if (!isCppLang(doc.languageId)) {
+  // 仅 C/C++ 文档注册给 clangd，其他语言不参与 LSP；
+  // 未命名标签页（untitled://，尚无真实文件）也不注册
+  if (!isCppLang(doc.languageId) || doc.uri.indexOf('file://') !== 0) {
     lsp.lastDocUri = null;
     return;
   }
@@ -698,7 +699,7 @@ function syncActiveDoc() {
 function syncNow() {
   if (!isReady() || !dirty) return;
   const doc = currentTextDoc();
-  if (!doc || !doc.uri || !isCppLang(doc.languageId)) {
+  if (!doc || !doc.uri || !isCppLang(doc.languageId) || doc.uri.indexOf('file://') !== 0) {
     dirty = false;
     return;
   }
@@ -1191,7 +1192,7 @@ function showEditorMenu(e) {
   const sel = isText && editor.getSelection ? editor.getSelection() : null;
   const hasSel = !!sel && !sel.isEmpty();
   const runnable = isText && t.path && ('.c' === '.' + getFileExtension(t.path).toLowerCase() || '.cpp' === '.' + getFileExtension(t.path).toLowerCase());
-  const lspReady = isReady() && isText && isCppLang(t.model.getLanguageId());
+  const lspReady = isReady() && isText && t.path && isCppLang(t.model.getLanguageId());
 
   menu.innerHTML = '';
   const item = (label, fn, disabled) => {
@@ -1839,6 +1840,7 @@ function applyTreeSelection() {
     const p = el.dataset && el.dataset.path;
     el.classList.toggle('selected', !!p && selectedTreePaths.has(normalizeTreeKey(p)));
   }
+  updateTreeSelectBar();
 }
 
 // 右键菜单当前是否可见（点击树节点时若可见则只关闭菜单，不触发选中）
@@ -1936,12 +1938,19 @@ async function pasteToDir(dir) {
   showSaveStatus('已粘贴 ' + n + ' 项');
 }
 
-async function deleteSelectedTreePaths() {
+async function deleteSelectedTreePaths(permanent) {
   const list = treeOpList();
   if (!list.length) return;
-  const ok = await customConfirm('确定删除选中的 ' + list.length + ' 项吗？');
+  // 永久删除：调用方显式要求（Shift / Ctrl）或设置中关闭了「移入回收站」。
+  const doPermanent =
+    permanent === true ||
+    (appSettings.editor && appSettings.editor.deleteToRecycleBin === false);
+  const msg = doPermanent
+    ? '确定永久删除选中的 ' + list.length + ' 项吗？将永久删除，无法恢复。'
+    : '确定删除选中的 ' + list.length + ' 项吗？';
+  const ok = await customConfirm(msg);
   if (!ok) return;
-  const r = await window.editorAPI.treeDelete(list);
+  const r = await window.editorAPI.treeDelete(list, { permanent: doPermanent });
   if (!r) return;
   let okCount = 0;
   for (const res of r.results || []) {
@@ -1972,7 +1981,7 @@ function askRename(p) {
     const tab = findTabByPath(r.oldPath);
     if (tab) closeTab(tab.id);
     showSaveStatus('已重命名');
-  });
+  }, !treeNodeIsDirectory(p));
 }
 
 // 模板：templates.cpp / templates.c / templates.header（设置窗口可改）
@@ -2033,7 +2042,7 @@ function askCreateFile(dir, defaultName) {
     if (!name) return;
     if (/[\\/:*?"<>|]/.test(name)) { showSaveStatus('文件名包含非法字符', true); return; }
     createTreeFile(dir, name);
-  });
+  }, true);
 }
 
 async function createTreeDir(dir, name) {
@@ -2053,6 +2062,23 @@ function askCreateDir(dir) {
     if (/[\\/:*?"<>|]/.test(name)) { showSaveStatus('文件夹名包含非法字符', true); return; }
     createTreeDir(dir, name);
   });
+}
+
+// 文件树右键「新建」菜单与设置「新建空白文件默认类型」共用同一种类型列表
+const NEW_FILE_TYPES = [
+  { key: 'cpp', label: '.cpp 文件', defaultName: '未命名.cpp', ext: 'cpp', lang: 'cpp', icon: 'cpp' },
+  { key: 'c', label: '.c 文件', defaultName: '未命名.c', ext: 'c', lang: 'c', icon: 'c' },
+  { key: 'h', label: '.h 文件', defaultName: '未命名.h', ext: 'h', lang: 'c', icon: 'h' },
+  { key: 'in', label: '.in 文件', defaultName: '未命名.in', ext: 'in', lang: 'plaintext', icon: 'txt' },
+  { key: 'out', label: '.out 文件', defaultName: '未命名.out', ext: 'out', lang: 'plaintext', icon: 'txt' },
+  { key: 'ans', label: '.ans 文件', defaultName: '未命名.ans', ext: 'ans', lang: 'plaintext', icon: 'txt' },
+  { key: 'plain', label: '文件', defaultName: '未命名', ext: '', lang: 'plaintext', icon: 'unknown' },
+];
+
+// 设置项 editor.defaultNewFileType 对应的类型定义（无匹配时用 cpp）
+function defaultNewFileType() {
+  const key = appSettings.editor && appSettings.editor.defaultNewFileType;
+  return NEW_FILE_TYPES.find((t) => t.key === key) || NEW_FILE_TYPES[0];
 }
 
 function openTreeMenu(e, treeNode) {
@@ -2108,13 +2134,7 @@ function openTreeMenu(e, treeNode) {
       sub.appendChild(d);
     };
     mkNew('文件夹', '', 'folder', true);
-    mkNew('.cpp 文件', 'new.cpp', 'cpp');
-    mkNew('.c 文件', 'new.c', 'c');
-    mkNew('.h 文件', 'new.h', 'h');
-    mkNew('.in 文件', 'new.in', 'txt');
-    mkNew('.out 文件', 'new.out', 'txt');
-    mkNew('.ans 文件', 'new.ans', 'txt');
-    mkNew('文件', 'new', 'unknown');
+    for (const t of NEW_FILE_TYPES) mkNew(t.label, t.defaultName, t.icon);
     subWrap.appendChild(sub);
     subWrap.addEventListener('click', (ev) => { ev.stopPropagation(); subWrap.classList.toggle('open'); });
     menu.appendChild(subWrap);
@@ -2122,7 +2142,7 @@ function openTreeMenu(e, treeNode) {
   }
 
   menu.appendChild(item('重命名', () => { if (single) askRename(opList[0]); }, !single));
-  menu.appendChild(item('删除', deleteSelectedTreePaths, opList.length === 0));
+  menu.appendChild(item('删除', () => deleteSelectedTreePaths(false), opList.length === 0));
 
   // 桌面端：复制/剪切/粘贴（Android 无文件系统复制粘贴）
   if (isDesktop) {
@@ -2188,8 +2208,9 @@ function hideTreeMenu() {
   if (menu) { menu.style.display = 'none'; menu.querySelectorAll('.has-submenu.open').forEach((el) => el.classList.remove('open')); }
 }
 
-// 新建 / 重命名共用的输入弹层
-function showTreeInput(title, initial, onOk) {
+// 新建 / 重命名共用的输入弹层。selectBase=true 时只选中文件名部分（不含扩展名），
+// 例如「new.cpp」仅选中「new」，目录名/无扩展名文件则全选。
+function showTreeInput(title, initial, onOk, selectBase) {
   const layer = document.getElementById('tree-input');
   if (!layer) return;
   document.getElementById('tree-input-title').textContent = title;
@@ -2198,7 +2219,9 @@ function showTreeInput(title, initial, onOk) {
   treeInputOnOk = onOk;
   layer.style.display = 'flex';
   field.focus();
-  field.select();
+  const dot = field.value.lastIndexOf('.');
+  if (selectBase && dot > 0) field.setSelectionRange(0, dot);
+  else field.select();
 }
 
 function hideTreeInput() {
@@ -2210,15 +2233,50 @@ function hideTreeInput() {
 // 自定义 confirm 弹层（替代 window.confirm；Android WebView 无 WebChromeClient 时
 // window.confirm 不弹窗直接返回 false，导致删除/确认类操作静默失败）
 let confirmResolve = null;
+
+// 配置确认弹层的按钮：两按钮（确定 / 取消）或三按钮（保存 / 不保存 / 取消）。
+function setConfirmButtons(tri, saveText, discardText, cancelText) {
+  const okBtn = document.getElementById('confirm-ok');
+  const thirdBtn = document.getElementById('confirm-third');
+  const cancelBtn = document.getElementById('confirm-cancel');
+  if (tri) {
+    if (okBtn) okBtn.textContent = saveText || '保存';
+    if (thirdBtn) { thirdBtn.textContent = discardText || '不保存'; thirdBtn.style.display = ''; }
+    if (cancelBtn) cancelBtn.textContent = cancelText || '取消';
+  } else {
+    if (okBtn) okBtn.textContent = '确定';
+    if (thirdBtn) thirdBtn.style.display = 'none';
+    if (cancelBtn) cancelBtn.textContent = '取消';
+  }
+}
+
 function customConfirm(message) {
   return new Promise((resolve) => {
     const layer = document.getElementById('confirm-dialog');
     if (!layer) { resolve(window.confirm(message)); return; }
     document.getElementById('confirm-message').textContent = message;
+    setConfirmButtons(false);
     layer.style.display = 'flex';
     confirmResolve = resolve;
   });
 }
+
+// 三按钮确认（保存 / 不保存 / 取消）：resolve 'save' | 'discard' | 'cancel'。
+function customTriConfirm(message, saveText, discardText, cancelText) {
+  return new Promise((resolve) => {
+    const layer = document.getElementById('confirm-dialog');
+    if (!layer) { resolve(window.confirm(message) ? 'save' : 'cancel'); return; }
+    document.getElementById('confirm-message').textContent = message;
+    setConfirmButtons(true, saveText, discardText, cancelText);
+    layer.style.display = 'flex';
+    confirmResolve = (val) => {
+      if (val === true) resolve('save');
+      else if (val === 'discard') resolve('discard');
+      else resolve('cancel');
+    };
+  });
+}
+
 function commitConfirm(ok) {
   const layer = document.getElementById('confirm-dialog');
   if (layer) layer.style.display = 'none';
@@ -2277,6 +2335,81 @@ function renderSwitchFolderButton(toolbar) {
   btn.appendChild(img);
   btn.addEventListener('click', pickProjectFolder);
   toolbar.appendChild(btn);
+}
+
+// 移动端常驻的文件树操作按钮（复制 / 剪切 / 粘贴）；桌面端由 CSS 隐藏。
+function renderTreeMobileActions(toolbar) {
+  if (!toolbar) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'tree-mobile-actions';
+  const mk = (label, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tree-mobile-btn';
+    b.textContent = label;
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+    wrap.appendChild(b);
+  };
+  mk('复制', () => copySelected());
+  mk('剪切', () => cutSelected());
+  mk('粘贴', () => pasteToDir(pasteTargetDir()));
+  toolbar.appendChild(wrap);
+}
+
+// 移动端滑动多选操作条：显示「已选 N 项」+ 常用操作按钮。
+let treeSelectBarEl = null;
+function ensureTreeSelectBar() {
+  if (treeSelectBarEl && document.body.contains(treeSelectBarEl)) return treeSelectBarEl;
+  const bar = document.getElementById('tree-select-bar');
+  if (!bar) return null;
+  bar.innerHTML = '';
+  const count = document.createElement('span');
+  count.className = 'tree-select-count';
+  bar.appendChild(count);
+  const mk = (label, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tree-select-btn';
+    b.textContent = label;
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+    bar.appendChild(b);
+  };
+  mk('复制', () => copySelected());
+  mk('剪切', () => cutSelected());
+  mk('粘贴', () => pasteToDir(pasteTargetDir()));
+  mk('删除', () => deleteSelectedTreePaths(false));
+  mk('全选', selectAllTreePaths);
+  mk('取消', clearTreeSelection);
+  bar._count = count;
+  treeSelectBarEl = bar;
+  return bar;
+}
+
+function updateTreeSelectBar() {
+  const bar = ensureTreeSelectBar();
+  if (!bar) return;
+  const mobile =
+    document.documentElement.classList.contains('platform-android') || window.innerWidth <= 760;
+  const n = treeOpList().length;
+  if (mobile && n > 0) {
+    if (bar._count) bar._count.textContent = '已选 ' + n + ' 项';
+    bar.classList.add('show');
+  } else {
+    bar.classList.remove('show');
+  }
+}
+
+// 选中文件树中当前可见的全部路径（折叠在 .children 内的不算可见）。
+function selectAllTreePaths() {
+  if (!projectDom) return;
+  const container = projectDom.parentElement;
+  if (!container) return;
+  const paths = [];
+  for (const el of container.querySelectorAll('.file, .folder')) {
+    if (el.offsetParent === null) continue;
+    if (el.dataset && el.dataset.path) paths.push(el.dataset.path);
+  }
+  setTreeSelection(paths);
 }
 
 // 确保项目目录信息已加载（init 与 startEditor 共享同一个加载过程）
@@ -2373,8 +2506,11 @@ async function loadProjectFile(){
     treeEl.appendChild(projectDom);
     projectDom.insertAdjacentElement('afterend', projectChildren);
   }
-  // 已打开项目：顶部显示「切换文件夹」按钮
-  if (toolbar) renderSwitchFolderButton(toolbar);
+  // 已打开项目：顶部显示移动端操作按钮与「切换文件夹」按钮
+  if (toolbar) {
+    renderTreeMobileActions(toolbar);
+    renderSwitchFolderButton(toolbar);
+  }
   // 树已就绪，应用暂存的文件变化
   if (treePendingInfo) {
     const pending = treePendingInfo;
@@ -2630,6 +2766,13 @@ const DEFAULT_CODE = ``;
 
 const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.webp', '.svg'];
 
+// 文本大小阈值：超过该大小（含二进制/图片之外的所有文件）一律不进 Monaco，
+// 在 fileview 里显示「文件过大（内容过长），未加载」，避免大文件卡死。
+const MAX_TEXT_SIZE = 8 * 1024 * 1024;
+// 超过该大小仍可编辑保存的文本：创建 Monaco model 时不设语言，
+// 禁用语法高亮/分词（如超大 .cpp/.h），防止 Monaco 卡死。
+const HIGHLIGHT_LIMIT = 2 * 1024 * 1024;
+
 const LANG_BY_EXT = {
   '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp',
   '.hpp': 'cpp', '.hh': 'cpp', '.hxx': 'cpp', '.ino': 'cpp',
@@ -2705,35 +2848,52 @@ function isCppLang(lang) {
   return lang === 'cpp' || lang === 'c' || lang === 'objective-c';
 }
 
-// 当前激活的文本文档信息（供 LSP 使用）；非文本/无 model 时返回 null
+// 当前激活的文本文档信息（供 LSP 使用）；非文本/无 model/未命名标签页时返回 null
 function currentTextDoc() {
   const t = activeTab();
   if (!t || t.kind !== 'text' || !t.model) return null;
   const uri = t.model.uri ? t.model.uri.toString() : null;
+  // 未命名标签页（untitled://）没有真实文件，不参与 LSP
+  if (!uri || uri.indexOf('file://') !== 0) return null;
   return { uri, languageId: t.model.getLanguageId(), text: t.model.getValue() };
 }
 
-// Ctrl+N：新建未命名标签页（无扩展名，纯文本）。
-// 首次 Ctrl+S 保存时走 saveFile 的「无路径」分支：弹出选择保存位置对话框。
+// Ctrl+N：新建未命名标签页。类型取决于设置「新建空白文件默认类型」
+// （editor.defaultNewFileType）；首次 Ctrl+S 保存时走 saveFile 的「无路径」分支。
 function newUntitledTab() {
   if (!editor) return;
+  const def = defaultNewFileType();
+  // 套用代码模板（$FILE_NAME$ → 含扩展名的文件名；$cursor$ 记录光标位置后移除）：
+  // 与文件树右键「新建 .cpp/.c/.h 文件」一致，空白未命名标签页也有模板内容。
+  const { content, cursorOffset } = applyTreeTemplate(def.ext, '未命名' + (def.ext ? '.' + def.ext : ''));
   const tab = {
     id: ++tabSeq,
     path: null,
-    name: '未命名',
+    name: '未命名' + (def.ext ? '.' + def.ext : ''),
     kind: 'text',
     dirty: false,
     restoring: false,
-    savedContent: '',
+    savedContent: content,
+    cursorOffset,
     model: monaco.editor.createModel(
-      '',
-      'plaintext',
+      content,
+      def.lang,
       monaco.Uri.parse('untitled://untitled-' + tabSeq)
     ),
   };
   tabs.push(tab);
   renderTabs();
   activateTab(tab);
+  // 模板里的 $cursor$ 定位光标
+  if (cursorOffset >= 0 && tab.model) {
+    try {
+      const pos = tab.model.getPositionAt(cursorOffset);
+      editor.setPosition(pos);
+      editor.revealPositionInCenter(pos);
+    } catch {
+      /* ignore */
+    }
+  }
   editor.focus();
   showSaveStatus('未命名文件：Ctrl+S 保存并选择保存位置');
 }
@@ -2789,11 +2949,12 @@ async function openFileTab(path, opts) {
 
   const ext = '.' + getFileExtension(path).toLowerCase();
   const isImage = IMAGE_EXTS.includes(ext) || (file.mime && file.mime.startsWith('image/'));
+  const size = file.size || 0;
 
-  if (isImage || file.binary) {
+  if (isImage) {
     tab.kind = 'image';
     tab.mime = file.mime || 'image/png';
-    tab.size = file.size || 0;
+    tab.size = size;
     tab.b64 = file.content; // 主进程对图片/二进制返回 base64
     if (isImage && !file.binary && typeof file.content === 'string') {
       // svg 等以文本形式返回的图片：转成 base64
@@ -2803,15 +2964,25 @@ async function openFileTab(path, opts) {
         tab.b64 = btoa(file.content);
       }
     }
-    if (file.binary && !isImage) tab.kind = 'binary';
+  } else if (size > MAX_TEXT_SIZE) {
+    // 超大文件（含超大二进制/文本）：不读入 Monaco、不做 base64，
+    // 由 fileview 显示「文件过大（内容过长），未加载」，避免卡死
+    tab.kind = 'too-large';
+    tab.size = size;
+    tab.binary = !!file.binary;
+    showSaveStatus('文件过大（' + (size / (1024 * 1024)).toFixed(1) + 'MB），未加载内容', true);
+  } else if (file.binary) {
+    tab.kind = 'binary';
+    tab.mime = file.mime || 'application/octet-stream';
+    tab.size = size;
+    tab.b64 = file.content;
   } else {
     tab.kind = 'text';
-    tab.model = monaco.editor.createModel(
-      file.content,
-      languageForPath(path, file.content),
-      monaco.Uri.file(path)
-    );
+    // 大文本仍可编辑保存，但禁用 Monaco 语法高亮/分词（lang 传 undefined）防止卡死
+    const lang = size > HIGHLIGHT_LIMIT ? undefined : languageForPath(path, file.content);
+    tab.model = monaco.editor.createModel(file.content, lang, monaco.Uri.file(path));
     tab.savedContent = file.content;
+    if (size > HIGHLIGHT_LIMIT) showSaveStatus('文件较大，已禁用语法高亮');
   }
 
   renderTabs();
@@ -2871,6 +3042,20 @@ function activateTab(tab) {
         const img = document.createElement('img');
         img.src = 'data:' + (tab.mime || 'image/png') + ';base64,' + tab.b64;
         host.appendChild(img);
+      } else if (tab.kind === 'too-large') {
+        // 超大文件：文案提示「内容过长」，与「二进制无法编辑」区分开
+        const info = document.createElement('div');
+        info.className = 'bininfo';
+        const t1 = document.createElement('div');
+        t1.className = 'bintitle';
+        t1.textContent = tab.name;
+        const t2 = document.createElement('div');
+        t2.className = 'binmsg';
+        t2.textContent =
+          '文件过大（' + (tab.size || 0) + ' 字节），内容过长，未加载';
+        info.appendChild(t1);
+        info.appendChild(t2);
+        host.appendChild(info);
       } else {
         const info = document.createElement('div');
         info.className = 'bininfo';
@@ -2913,21 +3098,38 @@ async function reloadTabFromDisk(tab) {
 
   const ext = '.' + getFileExtension(tab.path).toLowerCase();
   const isImage = IMAGE_EXTS.includes(ext) || (file.mime && file.mime.startsWith('image/'));
-  const kind = isImage ? 'image' : file.binary ? 'binary' : 'text';
+  const size = file.size || 0;
+  // 超大文件（含超大的二进制/文本）：与 openFileTab 一致，不读入 Monaco
+  let kind = isImage ? 'image' : file.binary ? 'binary' : 'text';
+  if (!isImage && size > MAX_TEXT_SIZE) kind = 'too-large';
 
   // 文件类型变化（如文本→二进制）会被主进程解析为「删除旧文件 + 新增新文件」，
   // 走 removed 分支直接关闭标签，这里无需处理类型切换。
-  if (kind === 'text') {
+  if (kind === 'too-large') {
+    // 若此前已建 model（文件由「正常」变大）：释放 model，避免 Monaco 加载过大内容
+    if (tab.model) {
+      try {
+        tab.model.dispose();
+      } catch {
+        /* ignore */
+      }
+      tab.model = null;
+    }
+    tab.savedContent = null;
+    tab.dirty = false;
+    tab.size = size;
+  } else if (kind === 'text') {
     if (!tab.model) {
+      const lang = size > HIGHLIGHT_LIMIT ? undefined : languageForPath(tab.path, file.content);
       tab.model = monaco.editor.createModel(
         file.content,
-        languageForPath(tab.path, file.content),
+        lang,
         monaco.Uri.file(tab.path)
       );
     } else if (tab.model.getValue() !== file.content) {
       // 文件在磁盘上更新：若此前按纯文本创建（无扩展名），可重新嗅探升级语言
       const lang = languageForPath(tab.path, file.content);
-      if (lang !== 'plaintext' && tab.model.getLanguageId() === 'plaintext') {
+      if (lang !== 'plaintext' && tab.model.getLanguageId() === 'plaintext' && size <= HIGHLIGHT_LIMIT) {
         monaco.editor.setModelLanguage(tab.model, lang);
       }
       tab.model.setValue(file.content);
@@ -2936,7 +3138,7 @@ async function reloadTabFromDisk(tab) {
     tab.dirty = false;
   } else {
     tab.mime = file.mime || 'image/png';
-    tab.size = file.size || 0;
+    tab.size = size;
     tab.b64 = file.content;
   }
 
@@ -2982,7 +3184,7 @@ function renderTabs() {
     btn.title = '关闭';
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      closeTab(t.id);
+      requestCloseTab(t.id);
     });
     el.appendChild(img);
     el.appendChild(span);
@@ -2991,7 +3193,7 @@ function renderTabs() {
     el.addEventListener('auxclick', (ev) => {
       if (ev.button === 1) {
         ev.preventDefault();
-        closeTab(t.id);
+        requestCloseTab(t.id);
       }
     });
     bar.appendChild(el);
@@ -3044,6 +3246,32 @@ function closeTab(id) {
     renderTabs();
   }
 }
+
+// 用户主动关闭标签页入口：脏文本标签先弹「保存 / 不保存 / 取消」确认。
+async function requestCloseTab(id) {
+  const tab = tabs.find((x) => x.id === id);
+  if (!tab) return;
+  if (!tab.dirty || tab.kind !== 'text' || tab.restoring) {
+    closeTab(id);
+    return;
+  }
+  const choice = await customTriConfirm(
+    '「' + tab.name + '」已修改，尚未保存。要保存更改吗？',
+    '保存', '不保存', '取消'
+  );
+  if (choice === 'cancel') return;
+  if (choice === 'save') {
+    activateTab(tab);
+    await saveFile();
+    // 保存被取消或失败：标签仍为脏，保持不关闭
+    if (tabs.indexOf(tab) === -1) return;
+    if (tab.dirty) return;
+    closeTab(id);
+    return;
+  }
+  closeTab(id);
+}
+
 
 // ---------------------------------------------------------------------------
 // 6. 语义高亮（clangd semantic tokens）
@@ -3559,6 +3787,15 @@ function initMobile() {
   document.addEventListener('touchend', onTouchEnd, true);
   document.addEventListener('touchcancel', onTouchCancel, true);
 
+  // 滑动多选结束后吞掉浏览器合成的 click，避免误打开文件
+  document.addEventListener('click', (e) => {
+    if (swipeJustEnded) {
+      swipeJustEnded = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
   // 左侧边缘右滑呼出文件树抽屉
   let swipeStartX = 0, swipeStartY = 0, swipeTracking = false;
   const EDGE_ZONE = 30;
@@ -3612,6 +3849,15 @@ let touchPressFired = false;
 const LONG_PRESS_MS = 500;
 const TOUCH_SLOP = 10;
 
+// 滑动多选：单指在文件树上横向滑动，经过的节点加入选择集。
+let swipeSelectActive = false;
+let swipeSelStartX = null;
+let swipeSelStartY = null;
+let swipeSelLastKey = null;
+let swipeJustEnded = false;
+const SWIPE_SELECT_DX = 24;
+const SWIPE_SELECT_DY = 60;
+
 function clearTouchPress() {
   if (touchPressTimer) {
     clearTimeout(touchPressTimer);
@@ -3621,7 +3867,7 @@ function clearTouchPress() {
 }
 
 function onTouchStart(e) {
-  if (e.touches.length !== 1) { clearTouchPress(); return; }
+  if (e.touches.length !== 1) { clearTouchPress(); swipeSelStartX = null; swipeSelectActive = false; return; }
   const t = e.touches[0];
   const el = document.elementFromPoint(t.clientX, t.clientY);
   if (!el || !el.closest) return;
@@ -3630,6 +3876,16 @@ function onTouchStart(e) {
   const inEditor = !!el.closest('#editor');
   if (!inTree && !inEditor) return;
   if (el.closest('#tree-menu') || el.closest('#editor-menu') || el.closest('#references-panel') || el.closest('#tree-input')) return;
+  // 记录滑动多选起点（仅文件树区域）
+  if (inTree) {
+    swipeSelStartX = t.clientX;
+    swipeSelStartY = t.clientY;
+    swipeSelLastKey = null;
+    swipeSelectActive = false;
+  } else {
+    swipeSelStartX = null;
+    swipeSelectActive = false;
+  }
   touchPressPoint = { x: t.clientX, y: t.clientY };
   clearTimeout(touchPressTimer);
   touchPressTimer = setTimeout(() => {
@@ -3640,6 +3896,24 @@ function onTouchStart(e) {
 }
 
 function onTouchMove(e) {
+  // 滑动多选判定：单指、起点在文件树、横向位移大且纵向偏差小
+  if (!swipeSelectActive && swipeSelStartX != null && e.touches.length === 1) {
+    const t = e.touches[0];
+    const dx = Math.abs(t.clientX - swipeSelStartX);
+    const dy = Math.abs(t.clientY - swipeSelStartY);
+    if (dx > SWIPE_SELECT_DX && dx > dy * 1.5 && dy < SWIPE_SELECT_DY) {
+      swipeSelectActive = true;
+      suppressNextClick(); // 吞掉可能合成到起点的 click
+      clearTouchPress();   // 取消长按计时，避免滑动时弹右键菜单
+      handleSwipeSelectPoint(swipeSelStartX, swipeSelStartY);
+    }
+  }
+  if (swipeSelectActive) {
+    const t = e.touches[0];
+    if (t) handleSwipeSelectPoint(t.clientX, t.clientY);
+    if (e.cancelable) e.preventDefault();
+    return;
+  }
   if (!touchPressTimer || !touchPressPoint) return;
   const t = e.touches[0];
   if (Math.abs(t.clientX - touchPressPoint.x) > TOUCH_SLOP || Math.abs(t.clientY - touchPressPoint.y) > TOUCH_SLOP) {
@@ -3647,8 +3921,40 @@ function onTouchMove(e) {
   }
 }
 
-function onTouchEnd(e) { clearTouchPress(); }
-function onTouchCancel(e) { clearTouchPress(); }
+function onTouchEnd(e) {
+  if (swipeSelectActive) {
+    swipeSelectActive = false;
+    swipeSelLastKey = null;
+    swipeSelStartX = null;
+    // 吞掉滑动结束后浏览器合成的 click，避免误打开文件
+    swipeJustEnded = true;
+    setTimeout(() => { swipeJustEnded = false; }, 500);
+    return;
+  }
+  clearTouchPress();
+}
+
+function onTouchCancel(e) {
+  swipeSelectActive = false;
+  swipeSelLastKey = null;
+  swipeSelStartX = null;
+  clearTouchPress();
+}
+
+// 把滑动经过位置的树节点加入选择集（去重，同一个节点只处理一次）。
+// toggle 语义：扫过已选中的项时取消选择，方便多选时局部反选；未选中则加入。
+function handleSwipeSelectPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || !el.closest) return;
+  const node = el.closest('.file') || el.closest('.folder');
+  if (!node || !node.dataset || !node.dataset.path) return;
+  const key = normalizeTreeKey(node.dataset.path);
+  if (key === swipeSelLastKey) return;
+  swipeSelLastKey = key;
+  if (selectedTreePaths.has(key)) selectedTreePaths.delete(key);
+  else selectedTreePaths.add(key);
+  applyTreeSelection();
+}
 
 // 长按松开后 WebView 会合成一次 click：若落在长按点附近（菜单可能刚弹出），
 // 把它吞掉避免菜单刚弹出就被点击关闭；点菜单之外的其他位置则放行，让外部点击能正常关闭菜单。
@@ -4008,6 +4314,14 @@ function init() {
     if (filePath) openFileTab(filePath);
   });
 
+  // 告知平台渲染端已就绪（以上订阅全部注册完毕）。Android 冷启动据此补投
+  // 缓存的外部打开文件；桌面端为无操作桩。
+  try {
+    if (window.editorAPI.markExternalReady) window.editorAPI.markExternalReady();
+  } catch {
+    /* ignore */
+  }
+
   // 工具链后台解压进度与就绪通知（Android 首次启动）
   window.editorAPI.onToolchainProgress((info) => {
     if (info && typeof info.done === 'number') {
@@ -4086,7 +4400,8 @@ function init() {
     if (e.key === 'Delete' || e.key === 'Del') {
       e.preventDefault();
       e.stopPropagation();
-      deleteSelectedTreePaths();
+      // Shift / Ctrl+Delete 永久删除；否则按设置决定是否移入回收站
+      deleteSelectedTreePaths(e.shiftKey || mod);
     } else if (mod && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
       e.stopPropagation();
@@ -4109,7 +4424,7 @@ function init() {
       else hideTreeMenu();
     }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N')) {
-      // Ctrl+N：新建未命名文件（无扩展名；首次 Ctrl+S 时选择保存位置）
+      // Ctrl+N：新建未命名文件（类型取「新建空白文件默认类型」；首次 Ctrl+S 时选择保存位置）
       e.preventDefault();
       newUntitledTab();
       return;
@@ -4127,7 +4442,7 @@ function init() {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
       e.preventDefault();
       const t = activeTab();
-      if (t) closeTab(t.id);
+      if (t) requestCloseTab(t.id);
     }
   });
 
@@ -4174,8 +4489,10 @@ function init() {
   // 自定义 confirm 弹层按钮
   const confirmOkBtn = document.getElementById('confirm-ok');
   const confirmCancelBtn = document.getElementById('confirm-cancel');
+  const confirmThirdBtn = document.getElementById('confirm-third');
   if (confirmOkBtn) confirmOkBtn.addEventListener('click', () => commitConfirm(true));
   if (confirmCancelBtn) confirmCancelBtn.addEventListener('click', () => commitConfirm(false));
+  if (confirmThirdBtn) confirmThirdBtn.addEventListener('click', () => commitConfirm('discard'));
   const confirmLayer = document.getElementById('confirm-dialog');
   if (confirmLayer) {
     confirmLayer.addEventListener('click', (e) => { if (e.target === confirmLayer) commitConfirm(false); });
@@ -4190,13 +4507,49 @@ function init() {
     console.error('[renderer] 未处理的 Promise 拒绝:', e.reason);
   });
 
-  window.addEventListener('beforeunload', () => {
-    shutdown = true;
-    try {
-      window.editorAPI.stop();
-    } catch {
-      /* ignore */
-    }
+  // 应用级关闭守卫：存在未保存的脏标签时先逐个询问，避免直接丢弃改动。
+  let appCloseArmed = false;
+  let appClosePending = false;
+  window.addEventListener('beforeunload', (e) => {
+    const stopApp = () => {
+      shutdown = true;
+      try {
+        window.editorAPI.stop();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (appCloseArmed) { stopApp(); return; }
+    const dirtyTabs = tabs.filter((t) => t.dirty && t.kind === 'text' && !t.restoring);
+    if (!dirtyTabs.length) { appCloseArmed = true; stopApp(); return; }
+    // 拦截本次关闭，异步逐项询问（保存 / 不保存 / 取消）
+    e.preventDefault();
+    e.returnValue = '有未保存的更改';
+    if (appClosePending) return;
+    appClosePending = true;
+    (async () => {
+      for (const tab of dirtyTabs) {
+        if (tabs.indexOf(tab) === -1) continue;
+        const choice = await customTriConfirm(
+          '「' + tab.name + '」已修改，尚未保存。要保存更改吗？',
+          '保存', '不保存', '取消'
+        );
+        if (choice === 'cancel') { appClosePending = false; return; }
+        if (choice === 'save') {
+          activateTab(tab);
+          await saveFile();
+          // 保存被取消或失败：中止整体关闭
+          if (tab.dirty) { appClosePending = false; return; }
+        }
+      }
+      appClosePending = false;
+      appCloseArmed = true;
+      try {
+        window.editorAPI.closeWindow();
+      } catch {
+        /* ignore */
+      }
+    })();
   });
 
   // 通过 monaco 的 AMD 加载器加载编辑器核心

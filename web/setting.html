@@ -64,6 +64,18 @@
                         <label class="label" for="fileTreeFontSize">文件树字号</label>
                         <input type="number" id="fileTreeFontSize" min="8" max="40" step="1">
                     </div>
+                    <div class="row">
+                        <label class="label" for="defaultFileType">新建空白文件默认类型</label>
+                        <select id="defaultFileType">
+                            <option value="cpp">.cpp 文件</option>
+                            <option value="c">.c 文件</option>
+                            <option value="h">.h 文件</option>
+                            <option value="in">.in 文件</option>
+                            <option value="out">.out 文件</option>
+                            <option value="ans">.ans 文件</option>
+                            <option value="plain">文件</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="group">
@@ -73,6 +85,13 @@
                     </div>
                     <div class="row check">
                         <label><input type="checkbox" id="autoMatchBrackets"> 括号自动匹配</label>
+                    </div>
+                </div>
+
+                <div class="group">
+                    <div class="group-heading">文件操作</div>
+                    <div class="row check">
+                        <label><input type="checkbox" id="deleteToRecycleBin"> 删除文件时移入回收站（取消勾选＝永久删除，可 Shift+Delete 强制永久）</label>
                     </div>
                 </div>
             </section>

@@ -756,6 +756,7 @@ function setupSaveIpc() {
 
   // 渲染进程 Ctrl+S（未命名标签页首次保存）：弹出「另存为」对话框自选目录与文件名。
   // 默认目录为项目根目录（未设置项目时用文档目录），默认文件名为「未命名」。
+  // 「保存类型」下拉用与文件树右键「新建」一致的类型列表生成，默认类型排在最前。
   ipcMain.handle('save:save-as', async (_event, content, suggestedName) => {
     if (typeof content !== 'string') {
       return { ok: false, message: '要保存的内容无效' };
@@ -765,15 +766,40 @@ function setupSaveIpc() {
     const defaultName = (typeof suggestedName === 'string' && suggestedName.trim())
       ? suggestedName.trim()
       : '未命名';
+    // 默认类型是「文件」（无扩展名）时：Windows 的另存为对话框会用「保存类型」里第一个
+    // 带真实扩展名的选项来给无扩展名文件名自动补全。只要列表里混着 .cpp/.c/.h 等具体
+    // 类型，无论「文件」是否排在最前，Windows 都会跳到第二个 C++ 文件并补上 .cpp。
+    // 因此这类保存只给通配符过滤器（文件和所有文件），什么都不会自动补全。
+    const defKey = appSettings.editor && appSettings.editor.defaultNewFileType;
+    let filters;
+    if (defKey === 'plain') {
+      filters = [
+        { name: '文件', extensions: ['*'] },
+        { name: '所有文件', extensions: ['*'] },
+      ];
+    } else {
+      const saveFileTypes = [
+        { name: '.cpp 文件', extensions: ['cpp'] },
+        { name: '.c 文件', extensions: ['c'] },
+        { name: '.h 文件', extensions: ['h'] },
+        { name: '.in 文件', extensions: ['in'] },
+        { name: '.out 文件', extensions: ['out'] },
+        { name: '.ans 文件', extensions: ['ans'] },
+        { name: '文件', extensions: ['*'] },
+      ];
+      const byKey = { cpp: 0, c: 1, h: 2, in: 3, out: 4, ans: 5, plain: 6 };
+      const pick = byKey[defKey] != null ? byKey[defKey] : 0;
+      filters = saveFileTypes
+        .map((f, i) => ({ name: f.name, extensions: f.extensions, i }))
+        .sort((a, b) => (a.i === pick ? -1 : b.i === pick ? 1 : 0))
+        .map(({ name, extensions }) => ({ name, extensions }));
+      filters.push({ name: '所有文件', extensions: ['*'] });
+    }
     const result = await dialog.showSaveDialog(win, {
       title: '保存新文件',
       defaultPath: path.join(defaultDir, defaultName),
       buttonLabel: '保存',
-      filters: [
-        { name: 'C/C++ 源文件', extensions: ['cpp', 'cc', 'cxx', 'c'] },
-        { name: '头文件', extensions: ['h', 'hpp', 'hh'] },
-        { name: '所有文件', extensions: ['*'] },
-      ],
+      filters,
     });
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
     try {
@@ -860,9 +886,27 @@ function setupProjectIpc() {
 function setupFileIpc() {
   // 读取任意文件。文本返回 UTF-8 字符串，图片/二进制返回 base64。
   // 不限于项目目录内：扩展名关联打开的外部文件也需要能读取。
+  // 单文件一次性读取的字节上限：超过则拒绝整块读入，
+  // 防止 V8 字符串上限（0x1fffffe8 ≈ 512MB）在 buf.toString 时抛
+  // “Cannot create a string longer than 0x1fffffe8 characters”。
+  // 渲染端对 >524288000 的非图片文件应作为“文件过大”展示，避免整块读入。
+  const MAX_READ_FILE_BYTES = 512 * 1024 * 1024;
+
   ipcMain.handle('file:read', async (_event, filePath) => {
     try {
       const resolved = path.resolve(filePath);
+      // 大文件前置保护：超过 V8 字符串上限（0x1fffffe8，约 512MB）前就拒绝，
+      // 避免 readFile 整块读入内存后 toString 抛 'Cannot create a string longer than 0x1fffffe8 characters'。
+      // 图片走 base64 也会整块进内存，同样设上限；渲染端据此显示"文件过大"占位而非崩溃。
+      let size = 0;
+      try {
+        size = fs.statSync(resolved).size;
+        if (size > MAX_READ_FILE_BYTES) {
+          return { ok: true, path: resolved, ext: path.extname(resolved).toLowerCase(), tooLarge: true, size };
+        }
+      } catch {
+        /* 无法 stat 时交给下面 readFile 重新报错 */
+      }
       const buf = await fs.promises.readFile(resolved);
       const ext = path.extname(resolved).toLowerCase();
       let binary = IMAGE_EXTS.has(ext);
@@ -988,8 +1032,13 @@ function setupFileIpc() {
     }
   });
 
-  ipcMain.handle('filetree:delete', async (_event, paths) => {
+  ipcMain.handle('filetree:delete', async (_event, paths, opts) => {
     const list = sanitizeTreePaths(paths);
+    // 永久删除：调用方显式要求，或设置中关闭了「移入回收站」。
+    // setting:save 合并 patch 到 appSettings.editor，缺省视为 true（移入回收站）。
+    const permanent =
+      (opts && opts.permanent === true) ||
+      (appSettings.editor && appSettings.editor.deleteToRecycleBin === false);
     const results = [];
     let failed = 0;
     for (const p of list) {
@@ -999,8 +1048,12 @@ function setupFileIpc() {
         continue;
       }
       try {
-        // 优先移入回收站（可恢复），失败时退回直接删除
-        await shell.trashItem(p);
+        if (permanent) {
+          fs.rmSync(p, { recursive: true, force: true });
+        } else {
+          // 优先移入回收站（可恢复），失败时退回直接删除
+          await shell.trashItem(p);
+        }
         results.push({ path: p, ok: true });
       } catch {
         try {

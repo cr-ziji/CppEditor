@@ -23,6 +23,30 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="text/x-c" />
+                <data android:mimeType="text/x-csrc" />
+                <data android:mimeType="text/x-c++" />
+                <data android:mimeType="text/x-c++src" />
+                <data android:mimeType="text/x-chdr" />
+                <data android:mimeType="text/x-c++hdr" />
+                <data android:mimeType="text/plain" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.cpp" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.c" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.h" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.cc" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.cxx" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.hpp" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cpp" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.c" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.h" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cc" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cxx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.hpp" />
+            </intent-filter>
         </activity>
 
         <activity

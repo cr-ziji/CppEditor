@@ -579,6 +579,94 @@ body.resizing #resizer{
     height: 18px;
 }
 
+/* 移动端文件树操作按钮与多选操作条：桌面隐藏，仅窄屏显示（见文件末尾媒体查询） */
+.tree-mobile-actions{
+    display: none;
+    align-items: center;
+    gap: 6px;
+    margin-right: auto;
+}
+
+.tree-mobile-btn{
+    background: #3a3a3a;
+    border: 1px solid #454545;
+    color: #cccccc;
+    padding: 4px 12px;
+    font-size: 13px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.tree-mobile-btn:hover{
+    background: #454545;
+}
+
+/* Android 无论屏幕宽窄都视为移动端：常驻操作按钮始终显示 */
+html.platform-android .tree-mobile-actions{
+    display: flex;
+}
+
+/* 滑动多选操作条：默认隐藏，选中后由 JS 加 .show 显示（JS 仅在移动端添加） */
+#tree-select-bar{
+    display: none;
+}
+
+#tree-select-bar.show{
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #2d2d2d;
+    border-top: 1px solid #3c3c3c;
+}
+
+#tree-select-bar .tree-select-count{
+    color: #cccccc;
+    font-size: 12px;
+    margin-right: auto;
+}
+
+#tree-select-bar .tree-select-btn{
+    background: #3a3a3a;
+    border: 1px solid #454545;
+    color: #cccccc;
+    padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#tree-select-bar .tree-select-btn:hover{
+    background: #454545;
+}
+
+html.theme-light body .tree-mobile-btn{
+    background: #f0f0f0;
+    border-color: #d0d0d0;
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-select-bar.show{
+    background: #f0f0f0;
+    border-top-color: #e6e6e6;
+}
+
+html.theme-light body #tree-select-bar .tree-select-count{
+    color: #1a1a1a;
+}
+
+html.theme-light body #tree-select-bar .tree-select-btn{
+    background: #ffffff;
+    border-color: #d0d0d0;
+    color: #1a1a1a;
+}
+
 /* 可滚动的文件树区域 */
 #filetree{
     flex: 1;
@@ -1849,6 +1937,17 @@ html.theme-light body .group .row input[type="number"]::-webkit-inner-spin-butto
     #switch-folder-btn,
     .tab {
         touch-action: manipulation;
+    }
+
+    /* 移动端常驻文件树操作按钮（桌面端隐藏） */
+    .tree-mobile-actions {
+        display: flex;
+    }
+
+    /* 滑动多选：横向手势由 JS 接管，纵向保留滚动 */
+    #filetree .file,
+    #filetree .folder {
+        touch-action: pan-y;
     }
 
     html.theme-light body #fileframe {
