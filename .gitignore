@@ -2,6 +2,7 @@
 node_modules
 resources/clangd
 resources/mingw
+resources/gcc
 CppProject
 dist
 build/path-backup.txt

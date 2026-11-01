@@ -116,18 +116,27 @@ const APP_ROOT = (function () {
 })();
 // 项目目录（保存目录）。未保存时为 null，使用应用根目录作为临时工作区。
 let projectDir = null;
+
+// 把磁盘路径转换为 file:// URI：Linux/macOS 的绝对路径本身以 / 开头，
+// 不能像 Windows 盘符路径那样再额外补一个斜杠。
+function toFileUri(p) {
+  let s = String(p || '').replace(/\\/g, '/');
+  if (!s.startsWith('/')) s = '/' + s;
+  return 'file://' + encodeURI(s).replace(/#/g, '%23').replace(/\?/g, '%3F');
+}
+
 // 当前编辑文档对应的磁盘路径（首次保存后才有）
 let FILE_PATH = (APP_ROOT.replace(/\\/g, '/') + '/main.cpp').replace(/\/+/g, '/');
-let DOC_URI = 'file:///' + FILE_PATH;
-let ROOT_URI = 'file:///' + APP_ROOT.replace(/\\/g, '/');
+let DOC_URI = toFileUri(FILE_PATH);
+let ROOT_URI = toFileUri(APP_ROOT);
 
 // 切换到某个项目目录，并让文档/工作区 URI 跟随它
 function applyProjectDir(dir, file) {
   if (!dir) return;
   projectDir = dir;
   FILE_PATH = (dir.replace(/\\/g, '/') + '/main.cpp').replace(/\/+/g, '/');
-  DOC_URI = 'file:///' + FILE_PATH;
-  ROOT_URI = 'file:///' + dir.replace(/\\/g, '/');
+  DOC_URI = toFileUri(FILE_PATH);
+  ROOT_URI = toFileUri(dir);
   if (file) savedPath = file;
 }
 
@@ -137,8 +146,11 @@ function pathDirOf(p) {
 }
 
 function pathEquals(a, b) {
-  const norm = (s) =>
-    (s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const norm = (s) => {
+    const v = (s || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    // Windows 路径大小写不敏感；Linux/macOS 保持原样，避免误判不同文件。
+    return IS_WIN ? v.toLowerCase() : v;
+  };
   return norm(a) === norm(b);
 }
 
@@ -2836,11 +2848,14 @@ function activeTab() {
 }
 
 function findTabByPath(p) {
-  const norm = (p || '').replace(/\\/g, '/').toLowerCase();
+  const norm = (p || '').replace(/\\/g, '/');
+  const key = IS_WIN ? norm.toLowerCase() : norm;
   return (
-    tabs.find(
-      (t) => t.path && t.path.replace(/\\/g, '/').toLowerCase() === norm
-    ) || null
+    tabs.find((t) => {
+      if (!t.path) return false;
+      const tabPath = t.path.replace(/\\/g, '/');
+      return (IS_WIN ? tabPath.toLowerCase() : tabPath) === key;
+    }) || null
   );
 }
 
@@ -4358,7 +4373,7 @@ function init() {
     if (shutdown || !lsp || !lsp.initialized) return;
     if (compileDbPath) {
       lsp.connection.sendNotification('workspace/didChangeWatchedFiles', {
-        changes: [{ uri: 'file:///' + compileDbPath.replace(/\\/g, '/'), type: 2 }],
+        changes: [{ uri: toFileUri(compileDbPath), type: 2 }],
       });
     }
     refreshSemanticTokens();
@@ -4379,11 +4394,11 @@ function init() {
     const changes = [];
     for (const f of info.added || []) {
       const p = typeof f === 'object' ? f.path : f;
-      changes.push({ uri: 'file:///' + p.replace(/\\/g, '/'), type: 1 });
+      changes.push({ uri: toFileUri(p), type: 1 });
     }
     for (const f of info.removed || []) {
       const p = typeof f === 'object' ? f.path : f;
-      changes.push({ uri: 'file:///' + p.replace(/\\/g, '/'), type: 3 });
+      changes.push({ uri: toFileUri(p), type: 3 });
     }
     if (changes.length) {
       lsp.connection.sendNotification('workspace/didChangeWatchedFiles', {

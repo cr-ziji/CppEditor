@@ -98,10 +98,17 @@
 
             <section class="settings-panel" data-panel="compile">
                 <h2 class="panel-heading">编译与运行</h2>
-                <p class="panel-sub">设置编译与链接使用的参数、语言标准与警告级别</p>
+                <p class="panel-sub">选择编译器来源，并设置编译与链接参数、语言标准与警告级别。预装工具链始终随应用分发。</p>
 
                 <div class="group">
                     <div class="group-heading">编译器</div>
+                    <div class="row">
+                        <label class="label" for="compilerSource">G++ 来源</label>
+                        <select id="compilerSource">
+                            <option value="bundled">预装版本（随应用分发）</option>
+                            <option value="system">系统版本（PATH 中的 g++/gcc）</option>
+                        </select>
+                    </div>
                     <div class="row">
                         <label class="label" for="compileCommand">编译参数</label>
                         <input type="text" id="compileCommand">

@@ -5,6 +5,18 @@ const windowStateKeeper = require('electron-window-state');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL, fileURLToPath } = require('url');
+
+const IS_WIN = process.platform === 'win32';
+const IS_LINUX = process.platform === 'linux';
+const IS_MAC = process.platform === 'darwin';
+const EXE_SUFFIX = IS_WIN ? '.exe' : '';
+// 文件名非法字符：Windows 限制更多，Linux/macOS 仅禁止路径分隔符。
+const INVALID_NAME_RE = IS_WIN ? /[\\/:*?"<>|]/ : /\//;
+const INVALID_NAME_DESC = IS_WIN ? '\\ / : * ? " < > |' : '/';
+
+// Linux 编译产物统一放到项目内的隐藏目录，避免污染文件树与 clangd 索引。
+const BUILD_DIR_NAME = '.cppeditor-build';
 
 // ---------------------------------------------------------------------------
 // 自定义 editor:// 协议：用于在渲染进程中安全地加载 web/ 前端脚本。
@@ -114,22 +126,178 @@ let headerEndLength = 4;
 let queuedWrites = [];
 let writeInFlight = false;
 
-function getClangdPath() {
-  const exeName = process.platform === 'win32' ? 'clangd.exe' : 'clangd';
-  const base = app.isPackaged
+function getClangdRoot() {
+  return app.isPackaged
     ? path.join(process.resourcesPath, 'clangd')
     : path.join(APP_ROOT, 'resources', 'clangd');
-  return path.join(base, 'bin', exeName);
 }
 
-function getMingwRoot() {
+function getClangdPath() {
+  const exeName = 'clangd' + EXE_SUFFIX;
+  const root = getClangdRoot();
+  const candidates = [
+    path.join(root, 'bin', exeName),
+    path.join(root, exeName),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || candidates[0];
+}
+
+// 预装工具链目录：Windows 使用 MinGW，Linux 使用随应用分发的 GCC。
+// 两个平台的目录布局保持一致：<root>/bin/g++、<root>/lib/gcc/<triple>/<ver> ...
+function getToolchainRoot() {
+  const dirName = IS_WIN ? 'mingw' : 'gcc';
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'mingw')
-    : path.join(APP_ROOT, 'resources', 'mingw');
+    ? path.join(process.resourcesPath, dirName)
+    : path.join(APP_ROOT, 'resources', dirName);
+}
+
+function compilerSource() {
+  const c = appSettings.compile || {};
+  return c.compilerSource === 'system' ? 'system' : 'bundled';
+}
+
+function systemCompilerAvailable() {
+  return !!(findSystemCommand('g++') || findSystemCommand('gcc'));
+}
+
+// 只有用户选择了系统版本且系统里确实能找到编译器时才切换；
+// 否则仍使用预装工具链，避免设置后编译 / clangd 突然不可用。
+function useSystemCompiler() {
+  return compilerSource() === 'system' && systemCompilerAvailable();
+}
+
+// 在 PATH 中查找可执行文件（Linux/macOS 会检查可执行权限）。
+function findSystemCommand(name) {
+  const exts = IS_WIN
+    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : [''];
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (IS_WIN) {
+          if (fs.existsSync(candidate)) return candidate;
+        } else {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return candidate;
+        }
+      } catch {
+        /* 继续查找 */
+      }
+    }
+  }
+  return null;
+}
+
+// 查找预装工具链中的 gcc/g++，兼容带版本号的可执行文件（如 g++-16）。
+function findBundledTool(name) {
+  const bin = path.join(getToolchainRoot(), 'bin');
+  const exact = path.join(bin, name + EXE_SUFFIX);
+  if (fs.existsSync(exact)) return exact;
+  try {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const versioned = new RegExp('^' + escaped + '-\\d+(?:\\.\\d+)*(?:\\.exe)?$', IS_WIN ? 'i' : '');
+    const entries = fs
+      .readdirSync(bin)
+      .filter((entry) => versioned.test(entry))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    for (const entry of entries) {
+      const candidate = path.join(bin, entry);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch {
+    /* 目录不存在 */
+  }
+  return null;
+}
+
+function ensureExecutable(filePath) {
+  if (!filePath || IS_WIN || !path.isAbsolute(filePath)) return;
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+  } catch {
+    try {
+      fs.chmodSync(filePath, 0o755);
+    } catch {
+      /* 无权限时交给 spawn 报错 */
+    }
+  }
+}
+
+function findVersionDirs(dir) {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  } catch {
+    return [];
+  }
+}
+
+// 推断工具链使用的 target triple。优先当前架构，同时扫描目录结构作为兜底。
+function detectGccTriples(root) {
+  const triples = new Set();
+  const preferred = IS_WIN
+    ? ['x86_64-w64-mingw32']
+    : process.arch === 'arm64'
+      ? ['aarch64-linux-gnu', 'aarch64-unknown-linux-gnu']
+      : ['x86_64-linux-gnu', 'x86_64-pc-linux-gnu'];
+  for (const triple of preferred) triples.add(triple);
+
+  for (const base of [path.join(root, 'lib', 'gcc'), root]) {
+    try {
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (/(?:linux|mingw|w64|darwin|android)/i.test(entry.name)) {
+          triples.add(entry.name);
+        }
+      }
+    } catch {
+      /* 目录不存在 */
+    }
+  }
+  return [...triples];
+}
+
+// 把 GCC 的 C++ 标准库 / 系统头文件目录加入 clangd 的搜索路径。
+// 同时兼容 MinGW（lib/gcc/<triple>/<ver>/include/c++）和 Linux
+// （include/c++/<ver>、lib/gcc/<triple>/<ver>/include）两种布局。
+function addGccIncludeFlags(flags, root, triple, seen) {
+  const pushIsystem = (dir) => {
+    if (!dir) return;
+    const normalized = dir.replace(/\\/g, '/');
+    if (!fs.existsSync(normalized) || seen.has(normalized)) return;
+    seen.add(normalized);
+    flags.push('-isystem', normalized);
+  };
+
+  const cxxBase = path.join(root, 'include', 'c++');
+  for (const version of findVersionDirs(cxxBase)) {
+    pushIsystem(path.join(cxxBase, version));
+    pushIsystem(path.join(cxxBase, version, triple));
+    pushIsystem(path.join(cxxBase, version, 'backward'));
+  }
+
+  const gccBase = path.join(root, 'lib', 'gcc', triple);
+  for (const version of findVersionDirs(gccBase)) {
+    const include = path.join(gccBase, version, 'include');
+    pushIsystem(path.join(include, 'c++'));
+    pushIsystem(path.join(include, 'c++', triple));
+    pushIsystem(path.join(include, 'c++', 'backward'));
+    pushIsystem(include);
+    pushIsystem(path.join(gccBase, version, 'include-fixed'));
+  }
+
+  pushIsystem(path.join(root, triple, 'include'));
+  pushIsystem(path.join(root, 'include', triple));
+  pushIsystem(path.join(root, 'include'));
 }
 
 /**
- * 计算 mingw 头文件搜索路径与目标平台参数。
+ * 计算 clangd 使用的头文件搜索路径与目标平台参数。
  *
  * 注意：这里不写死 -std。因为 -std=c++17 对 C 语言是非法参数
  * （Invalid argument '-std=c++17' not allowed with 'C'），而 fallbackFlags
@@ -137,37 +305,23 @@ function getMingwRoot() {
  * 逐文件参数中（.c → -std=c11，.cpp → -std=c++17）。
  */
 function buildBaseFlags() {
-  const mingw = getMingwRoot();
-  const flags = ['--target=x86_64-w64-mingw32'];
+  // 用户选择系统 g++ 时，clangd 也按系统工具链解析头文件。
+  if (useSystemCompiler()) return [];
 
-  const pushIsystem = (dir) => {
-    if (!dir) return;
-    const normalized = dir.replace(/\\/g, '/');
-    if (fs.existsSync(normalized)) {
-      flags.push('-isystem', normalized);
-    }
-  };
+  const root = getToolchainRoot();
+  if (!fs.existsSync(root)) return [];
 
-  const gccRoot = path.join(mingw, 'lib', 'gcc', 'x86_64-w64-mingw32');
-  let versionDir = null;
-  try {
-    if (fs.existsSync(gccRoot)) {
-      const entries = fs.readdirSync(gccRoot).filter((e) => /^\d/.test(e));
-      if (entries.length > 0) versionDir = entries[0];
-    }
-  } catch {
-    versionDir = null;
+  const flags = [];
+  const seen = new Set();
+  for (const triple of detectGccTriples(root)) {
+    addGccIncludeFlags(flags, root, triple, seen);
   }
 
-  if (versionDir) {
-    const gccInclude = path.join(gccRoot, versionDir, 'include');
-    pushIsystem(path.join(gccInclude, 'c++'));
-    pushIsystem(path.join(gccInclude, 'c++', 'x86_64-w64-mingw32'));
-    pushIsystem(path.join(gccInclude, 'c++', 'backward'));
-    pushIsystem(path.join(gccInclude, 'include-fixed'));
+  if (IS_WIN) {
+    flags.unshift('--target=x86_64-w64-mingw32');
+  } else if (findBundledTool('g++') || findBundledTool('gcc')) {
+    flags.unshift('--gcc-toolchain=' + root.replace(/\\/g, '/'));
   }
-  pushIsystem(path.join(mingw, 'x86_64-w64-mingw32', 'include'));
-  pushIsystem(path.join(mingw, 'include'));
 
   return flags;
 }
@@ -253,6 +407,8 @@ let projectWatcher = null;
 // 剪贴板中的文件是否为「剪切」（移动）。CF_HDROP 无剪切标志，
 // 用本地标记区分：true 表示下次粘贴为移动而非复制。
 let clipboardCut = false;
+// Linux 下部分桌面环境对自定义剪贴板格式支持不一致，保留一份内存副本作为兜底。
+let clipboardFiles = [];
 
 function snapshotProjectFiles(dir) {
   const out = new Map();
@@ -519,17 +675,23 @@ function startClangd() {
     return { ok: true, message: 'clangd 已在运行', clangdPath: getClangdPath() };
   }
 
-  const clangdPath = getClangdPath();
+  // 优先使用随应用分发的 clangd；预装版本缺失时回退到系统 PATH 中的 clangd，
+  // 保证开发环境（尚未放置 resources/clangd）也能正常使用 LSP。
+  let clangdPath = getClangdPath();
+  if (!fs.existsSync(clangdPath)) {
+    clangdPath = findSystemCommand('clangd') || clangdPath;
+  }
   if (!fs.existsSync(clangdPath)) {
     emitStatus({
       state: 'error',
-      message: '找不到 clangd，请确认 resources/clangd 目录存在: ' + clangdPath,
+      message: '找不到 clangd，请确认 resources/clangd 目录存在，或安装系统 clangd: ' + clangdPath,
     });
     return {
       ok: false,
       message: '找不到 clangd 可执行文件: ' + clangdPath,
     };
   }
+  ensureExecutable(clangdPath);
 
   stdoutBuffer = Buffer.alloc(0);
   pendingContentLength = null;
@@ -839,6 +1001,8 @@ async function readProjectDir(currentPath) {
   for (const entry of entries) {
     const fullPath = path.join(currentPath, entry.name);
     if (entry.isDirectory()) {
+      // Linux 编译输出目录不显示在文件树中
+      if (entry.name === BUILD_DIR_NAME) continue;
       // 目录自身也加入结果，保证空文件夹也能在文件树中显示
       results.push({ path: fullPath, isDirectory: true });
       // 递归调用，并展开子目录的结果
@@ -1010,7 +1174,10 @@ function setupFileIpc() {
     // 剪切（移动）成功后清空剪贴板，避免重复粘贴；部分失败也放弃移动标记
     if (clipboardCut) {
       clipboardCut = false;
-      if (failed === 0) clipboard.clear();
+      if (failed === 0) {
+        clipboard.clear();
+        clipboardFiles = [];
+      }
     }
     return { ok: failed === 0, results };
   });
@@ -1018,7 +1185,7 @@ function setupFileIpc() {
   ipcMain.handle('filetree:rename', (_event, oldPath, newName) => {
     if (typeof newName !== 'string' || !newName.trim()) return { ok: false, message: '文件名不能为空' };
     newName = newName.trim();
-    if (/[\\/:*?"<>|]/.test(newName)) return { ok: false, message: '文件名包含非法字符: \\ / : * ? " < > |' };
+    if (INVALID_NAME_RE.test(newName)) return { ok: false, message: '文件名包含非法字符: ' + INVALID_NAME_DESC };
     if (newName === '.' || newName === '..') return { ok: false, message: '文件名不合法' };
     if (!oldPath || !fs.existsSync(oldPath)) return { ok: false, message: '源文件不存在' };
     const isDirectory = fs.statSync(oldPath).isDirectory();
@@ -1084,7 +1251,7 @@ function setupFileIpc() {
   ipcMain.handle('filetree:create-file', (_event, dir, name, content) => {
     if (typeof name !== 'string' || !name.trim()) return { ok: false, message: '文件名不能为空' };
     name = name.trim();
-    if (/[\\/:*?"<>|]/.test(name)) return { ok: false, message: '文件名包含非法字符: \\ / : * ? " < > |' };
+    if (INVALID_NAME_RE.test(name)) return { ok: false, message: '文件名包含非法字符: ' + INVALID_NAME_DESC };
     if (name === '.' || name === '..') return { ok: false, message: '文件名不合法' };
     if (!dir || !fs.existsSync(dir)) return { ok: false, message: '目标文件夹无效' };
     const dest = path.join(dir, name);
@@ -1101,7 +1268,7 @@ function setupFileIpc() {
   ipcMain.handle('filetree:create-dir', (_event, dir, name) => {
     if (typeof name !== 'string' || !name.trim()) return { ok: false, message: '文件夹名不能为空' };
     name = name.trim();
-    if (/[\\/:*?"<>|]/.test(name)) return { ok: false, message: '文件夹名包含非法字符: \\ / : * ? " < > |' };
+    if (INVALID_NAME_RE.test(name)) return { ok: false, message: '文件夹名包含非法字符: ' + INVALID_NAME_DESC };
     if (name === '.' || name === '..') return { ok: false, message: '文件夹名不合法' };
     if (!dir || !fs.existsSync(dir)) return { ok: false, message: '目标文件夹无效' };
     const dest = path.join(dir, name);
@@ -1135,7 +1302,8 @@ function sanitizeTreePaths(paths) {
     if (typeof p !== 'string') continue;
     const r = path.resolve(p);
     if (!projectPath || !isWithin(projectPath, r)) continue;
-    if (out.some((x) => x.toLowerCase() === r.toLowerCase())) continue;
+    const key = IS_WIN ? r.toLowerCase() : r;
+    if (out.some((x) => (IS_WIN ? x.toLowerCase() : x) === key)) continue;
     out.push(r);
   }
   return out;
@@ -1220,8 +1388,35 @@ function runClipboardScript(scriptFile, args) {
   });
 }
 
-// 将文件路径列表写入系统剪贴板（CF_HDROP）。返回 { ok, count } / { ok:false, message }。
+function parseUriList(text) {
+  const paths = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    try {
+      paths.push(fileURLToPath(line));
+    } catch {
+      // 非 file:// URI 或普通路径：只接受绝对路径
+      if (path.isAbsolute(line)) paths.push(line);
+    }
+  }
+  return paths;
+}
+
+// 将文件路径列表写入系统剪贴板。Windows 使用 CF_HDROP（与资源管理器互通），
+// Linux 使用标准 text/uri-list，并保留内存副本作为桌面环境兼容兜底。
 async function clipboardWriteFiles(paths) {
+  if (!IS_WIN) {
+    try {
+      const uriList = paths.map((p) => pathToFileURL(p).href).join('\r\n') + '\r\n';
+      clipboard.writeBuffer('text/uri-list', Buffer.from(uriList, 'utf8'));
+      clipboardFiles = [...paths];
+      return { ok: true, count: paths.length };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+  }
+
   try {
     const dir = CLIP_SCRIPT_DIR();
     fs.mkdirSync(dir, { recursive: true });
@@ -1240,6 +1435,18 @@ async function clipboardWriteFiles(paths) {
 
 // 从系统剪贴板读取文件路径列表。返回 { ok, paths } / { ok:false, message }。
 async function clipboardReadFiles() {
+  if (!IS_WIN) {
+    let paths = [];
+    try {
+      const buf = clipboard.readBuffer('text/uri-list');
+      if (buf && buf.length) paths = parseUriList(buf.toString('utf8'));
+    } catch {
+      /* 剪贴板中没有该格式 */
+    }
+    if (!paths.length) paths = [...clipboardFiles];
+    return { ok: true, paths };
+  }
+
   try {
     const dir = CLIP_SCRIPT_DIR();
     fs.mkdirSync(dir, { recursive: true });
@@ -1255,16 +1462,26 @@ async function clipboardReadFiles() {
 }
 
 // ---------------------------------------------------------------------------
-// 运行当前文件：用 MinGW 的 g++/gcc 编译 .cpp/.c，成功后启动编译出的 exe
+// 运行当前文件：用预装的 g++/gcc 编译 .cpp/.c，成功后启动编译产物。
+// 设置中可选择改用系统 PATH 中的 g++/gcc；预装工具链始终随应用分发。
 // ---------------------------------------------------------------------------
+function getCompilerPath(name) {
+  if (useSystemCompiler()) {
+    const system = findSystemCommand(name);
+    if (system) return system;
+  }
+  const bundled = findBundledTool(name);
+  if (bundled) return bundled;
+  // 预装版本缺失时回退系统 PATH
+  return findSystemCommand(name) || name;
+}
+
 function getGxxPath() {
-  const bundled = path.join(getMingwRoot(), 'bin', 'g++.exe');
-  return fs.existsSync(bundled) ? bundled : 'g++';
+  return getCompilerPath('g++');
 }
 
 function getGccPath() {
-  const bundled = path.join(getMingwRoot(), 'bin', 'gcc.exe');
-  return fs.existsSync(bundled) ? bundled : 'gcc';
+  return getCompilerPath('gcc');
 }
 
 // 把空格分隔的参数字符串拆成数组（支持单/双引号包裹的含空格参数）
@@ -1316,13 +1533,38 @@ function clangdFallbackFlags() {
   return flags;
 }
 
-// 让子进程能找到 MinGW 的 DLL（libstdc++-6.dll 等）
-function mingwEnv() {
-  const binDir = path.join(getMingwRoot(), 'bin');
-  return {
-    ...process.env,
-    PATH: binDir + path.delimiter + (process.env.PATH || ''),
-  };
+// 编译 / 运行子进程的环境变量：使用预装工具链时，把其 bin 和运行库目录
+// 放到 PATH / LD_LIBRARY_PATH 最前面，确保能找到 libstdc++ 等动态库。
+function compilerEnv(compilerPath) {
+  const env = { ...process.env };
+  const root = getToolchainRoot();
+  if (!compilerPath || !path.isAbsolute(compilerPath) || !isWithin(root, compilerPath)) {
+    return env;
+  }
+
+  const binDir = path.join(root, 'bin');
+  env.PATH = binDir + path.delimiter + (env.PATH || '');
+
+  if (!IS_WIN) {
+    const libDirs = [path.join(root, 'lib'), path.join(root, 'lib64')];
+    for (const triple of detectGccTriples(root)) {
+      for (const version of findVersionDirs(path.join(root, 'lib', 'gcc', triple))) {
+        libDirs.push(path.join(root, 'lib', 'gcc', triple, version));
+      }
+    }
+    const existing = libDirs.filter((dir) => fs.existsSync(dir));
+    const old = env.LD_LIBRARY_PATH;
+    env.LD_LIBRARY_PATH = [...existing, old].filter(Boolean).join(path.delimiter);
+  }
+  return env;
+}
+
+// Linux 编译产物放到隐藏目录，避免出现在文件树中；Windows 保持 .exe 同目录。
+function buildOutputPath(filePath) {
+  const dir = path.dirname(filePath);
+  const ext = path.extname(filePath);
+  if (IS_WIN) return filePath.slice(0, filePath.length - ext.length) + '.exe';
+  return path.join(dir, BUILD_DIR_NAME, path.basename(filePath, ext));
 }
 
 function runProcess(cmd, args, cwd, env) {
@@ -1341,71 +1583,206 @@ function runProcess(cmd, args, cwd, env) {
   });
 }
 
-function setupRunIpc() {
-  // 启动编译出的 exe：经 cmd start 在新窗口中启动目标程序。
-  // 直接 spawn 控制台程序通常不会弹出可见窗口；cmd /c start 会为目标
-  // 分配一个新的控制台窗口（windowsHide 只隐藏最外层 cmd 本身）。
-  // 窗口内由 PowerShell 运行 Dev-C++ 风格的执行脚本：前台运行 exe 并计时，
-  // 结束后显示运行时间 + 按任意键继续，按键后窗口关闭，不残留命令行。
-  const launchExe = (exePath, dir, srcPath) => {
-    try {
-      // Dev-C++ 风格运行：PowerShell 前台运行 exe 并计时，结束后显示
-      // 「进程在 X 秒后退出，返回值为 N」+ cmd 版 pause（任意键关闭，
-      // 系统文案「请按任意键继续. . .」）。窗口标题设为当前文件。
-      const tmpDir = path.join(app.getPath('temp'), 'cppeditor-run');
-      fs.mkdirSync(tmpDir, { recursive: true });
-      const ps1Path = path.join(tmpDir, 'run-' + Date.now() + '.ps1');
-      const esc = (s) => s.replace(/'/g, "''");
-      // 标题用文件绝对路径，避免不同文件夹下的同名文件混淆
-      const title = srcPath ? srcPath : exePath;
-      const ps1 =
-        "$ErrorActionPreference = 'Stop'\n" +
-        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" +
-        "cmd /c chcp 65001 > $null\n" +
-        "$exe = '" + esc(exePath) + "'\n" +
-        "Set-Location '" + esc(dir) + "'\n" +
-        "$Host.UI.RawUI.WindowTitle = '" + esc(title) + "'\n" +
-        "$sw = [System.Diagnostics.Stopwatch]::StartNew()\n" +
-        "& $exe\n" +
-        "$code = $LASTEXITCODE\n" +
-        "$sw.Stop()\n" +
-        "Write-Host ''\n" +
-        "Write-Host '--------------------------------'\n" +
-        "Write-Host ('进程在{0:N3}秒后退出，返回值为{1}' -f $sw.Elapsed.TotalSeconds, $code)\n" +
-        "cmd /c pause\n" +
-        "exit $code\n";
-      fs.writeFileSync(ps1Path, '\ufeff' + ps1, 'utf8');
-      const cmdPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
-      // 注意：ps1Path 不在此处内嵌双引号。libuv 对含引号的参数会双写内部引号，
-      // 导致 cmd 解析出错、ps1 无法执行；无引号的路径由 libuv 按需自动加引号。
-      const child = spawn(
-        cmdPath,
-        ['/c', 'start', '', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1Path],
-        {
-          cwd: dir,
-          env: mingwEnv(),
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+function spawnDetached(command, args, options) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let child = null;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      if (ok && child) {
+        try {
+          child.unref();
+        } catch {
+          /* ignore */
         }
-      );
-      child.unref();
+      }
+      resolve(ok);
+    };
+    try {
+      child = spawn(command, args, options);
+    } catch {
+      resolve(false);
+      return;
+    }
+    child.once('spawn', () => finish(true));
+    child.once('error', () => finish(false));
+  });
+}
+
+function resolveTerminalCommand(command) {
+  if (!command) return null;
+  if (command.includes('/') || command.includes('\\')) {
+    try {
+      fs.accessSync(command, fs.constants.X_OK);
+      return command;
+    } catch {
+      return null;
+    }
+  }
+  return findSystemCommand(command);
+}
+
+// Windows：经 cmd start 在新控制台窗口中运行 PowerShell 执行脚本，
+// 前台运行 exe 并计时，结束后显示运行时间 + 按任意键继续。
+function launchExeWindows(exePath, dir, srcPath, compilerPath) {
+  try {
+    const tmpDir = path.join(app.getPath('temp'), 'cppeditor-run');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const ps1Path = path.join(tmpDir, 'run-' + Date.now() + '.ps1');
+    const esc = (s) => s.replace(/'/g, "''");
+    // 标题用文件绝对路径，避免不同文件夹下的同名文件混淆
+    const title = srcPath ? srcPath : exePath;
+    const ps1 =
+      "$ErrorActionPreference = 'Stop'\n" +
+      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" +
+      "cmd /c chcp 65001 > $null\n" +
+      "$exe = '" + esc(exePath) + "'\n" +
+      "Set-Location '" + esc(dir) + "'\n" +
+      "$Host.UI.RawUI.WindowTitle = '" + esc(title) + "'\n" +
+      "$sw = [System.Diagnostics.Stopwatch]::StartNew()\n" +
+      "& $exe\n" +
+      "$code = $LASTEXITCODE\n" +
+      "$sw.Stop()\n" +
+      "Write-Host ''\n" +
+      "Write-Host '--------------------------------'\n" +
+      "Write-Host ('进程在{0:N3}秒后退出，返回值为{1}' -f $sw.Elapsed.TotalSeconds, $code)\n" +
+      "cmd /c pause\n" +
+      "exit $code\n";
+    fs.writeFileSync(ps1Path, '\ufeff' + ps1, 'utf8');
+    const cmdPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+    // 注意：ps1Path 不在此处内嵌双引号。libuv 对含引号的参数会双写内部引号，
+    // 导致 cmd 解析出错、ps1 无法执行；无引号的路径由 libuv 按需自动加引号。
+    const child = spawn(
+      cmdPath,
+      ['/c', 'start', '', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1Path],
+      {
+        cwd: dir,
+        env: compilerEnv(compilerPath),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      }
+    );
+    child.unref();
+    // 清理历史临时脚本（保留刚创建的这个）
+    try {
+      for (const f of fs.readdirSync(tmpDir)) {
+        if (/^run-\d+\.ps1$/.test(f) && path.join(tmpDir, f) !== ps1Path) {
+          fs.unlinkSync(path.join(tmpDir, f));
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  } catch (err) {
+    return { ok: false, message: '启动程序失败: ' + err.message };
+  }
+  return { ok: true, exePath, message: '已启动: ' + exePath };
+}
+
+// Linux：自动选择一个可用的终端模拟器，在其中运行带计时 / 暂停的 bash 脚本。
+// 若没有终端模拟器则明确报错，避免控制台程序在后台静默运行。
+async function launchExeLinux(exePath, dir, srcPath, compilerPath) {
+  const tmpDir = path.join(app.getPath('temp'), 'cppeditor-run');
+  const scriptPath = path.join(tmpDir, 'run-' + Date.now() + '.sh');
+  const title = srcPath ? srcPath : exePath;
+  try {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const script =
+      '#!/usr/bin/env bash\n' +
+      'cd -- ' + shellQuote(dir) + ' || exit 1\n' +
+      "printf '\\033]0;%s\\007' " + shellQuote(title) + '\n' +
+      'start=$(date +%s%N)\n' +
+      shellQuote(exePath) + '\n' +
+      'code=$?\n' +
+      'end=$(date +%s%N)\n' +
+      "printf '\\n--------------------------------\\n'\n" +
+      'awk -v s="$start" -v e="$end" -v c="$code" \'BEGIN { printf "进程在 %.3f 秒后退出，返回值为 %d\\n", (e-s)/1000000000, c }\'\n' +
+      "printf '请按任意键继续...'\n" +
+      'IFS= read -r -n 1 -s\n' +
+      "printf '\\n'\n" +
+      'exit "$code"\n';
+    fs.writeFileSync(scriptPath, script, { encoding: 'utf8', mode: 0o755 });
+    ensureExecutable(scriptPath);
+  } catch (err) {
+    return { ok: false, message: '创建运行脚本失败: ' + err.message };
+  }
+
+  const candidates = [];
+  // $TERMINAL 允许带参数，例如 TERMINAL="kitty --single-instance"。
+  const envTerminal = splitArgs((process.env.TERMINAL || '').trim());
+  if (envTerminal.length) {
+    candidates.push({
+      cmd: envTerminal[0],
+      args: [...envTerminal.slice(1), '-e', 'bash', scriptPath],
+    });
+  }
+  candidates.push(
+    { cmd: 'x-terminal-emulator', args: ['-T', title, '-e', 'bash', scriptPath] },
+    { cmd: 'gnome-terminal', args: ['--title', title, '--', 'bash', scriptPath] },
+    { cmd: 'konsole', args: ['--title', title, '-e', 'bash', scriptPath] },
+    { cmd: 'xfce4-terminal', args: ['--title', title, '--command', 'bash ' + shellQuote(scriptPath)] },
+    { cmd: 'mate-terminal', args: ['--title', title, '-x', 'bash', scriptPath] },
+    { cmd: 'tilix', args: ['--title', title, '-e', 'bash ' + shellQuote(scriptPath)] },
+    { cmd: 'kitty', args: ['--title', title, 'bash', scriptPath] },
+    { cmd: 'alacritty', args: ['--title', title, '-e', 'bash', scriptPath] },
+    { cmd: 'xterm', args: ['-T', title, '-e', 'bash', scriptPath] }
+  );
+
+  for (const candidate of candidates) {
+    const command = resolveTerminalCommand(candidate.cmd);
+    if (!command) continue;
+    const ok = await spawnDetached(command, candidate.args, {
+      cwd: dir,
+      env: compilerEnv(compilerPath),
+      detached: true,
+      stdio: 'ignore',
+    });
+    if (ok) {
       // 清理历史临时脚本（保留刚创建的这个）
       try {
         for (const f of fs.readdirSync(tmpDir)) {
-          if (/^run-\d+\.ps1$/.test(f) && path.join(tmpDir, f) !== ps1Path) {
+          if (/^run-\d+\.sh$/.test(f) && f !== path.basename(scriptPath)) {
             fs.unlinkSync(path.join(tmpDir, f));
           }
         }
       } catch {
         /* ignore */
       }
-    } catch (err) {
-      return { ok: false, message: '启动程序失败: ' + err.message };
+      return { ok: true, exePath, message: '已启动: ' + exePath };
     }
-    return { ok: true, exePath, message: '已启动: ' + exePath };
-  };
+  }
 
+  return {
+    ok: false,
+    message: '未找到可用的终端模拟器（可安装 gnome-terminal / konsole / xterm，或设置 $TERMINAL）',
+  };
+}
+
+function launchExecutable(exePath, dir, srcPath, compilerPath) {
+  if (IS_WIN) return launchExeWindows(exePath, dir, srcPath, compilerPath);
+  if (IS_LINUX) return launchExeLinux(exePath, dir, srcPath, compilerPath);
+
+  try {
+    const child = spawn(exePath, [], {
+      cwd: dir,
+      env: compilerEnv(compilerPath),
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return { ok: true, exePath, message: '已启动: ' + exePath };
+  } catch (err) {
+    return { ok: false, message: '启动程序失败: ' + err.message };
+  }
+}
+
+function setupRunIpc() {
   ipcMain.handle('run:compile-and-run', async (_event, filePath) => {
     if (typeof filePath !== 'string' || !filePath) {
       return { ok: false, message: '无效的文件路径' };
@@ -1420,17 +1797,24 @@ function setupRunIpc() {
     }
 
     const compiler = isC ? getGccPath() : getGxxPath();
-    const exePath = filePath.slice(0, filePath.length - ext.length) + '.exe';
+    ensureExecutable(compiler);
+    const exePath = buildOutputPath(filePath);
     const dir = path.dirname(filePath);
+    try {
+      fs.mkdirSync(path.dirname(exePath), { recursive: true });
+    } catch (err) {
+      return { ok: false, message: '创建编译输出目录失败: ' + err.message };
+    }
     // 编译前同步 compile_commands.json（当前项目存在时），确保 clangd 索引参数与本次编译一致
     if (projectPath && fs.existsSync(projectPath)) writeCompileCommands(projectPath);
     // 编译参数来自设置（语言标准/警告级别/自定义编译参数）+ 用户链接参数。
-    // 不默认 -static：动态链接 mingw 运行时 DLL，运行时由 mingwEnv 提供 PATH。
+    // 不默认 -static：Windows 动态链接 mingw 运行时 DLL；Linux 使用预装 GCC 的
+    // libstdc++，运行时由 compilerEnv() 提供 PATH / LD_LIBRARY_PATH。
     const args = [filePath, '-o', exePath, ...compileSettingsArgs(isC), ...linkerSettingsArgs()];
 
     let result;
     try {
-      result = await runProcess(compiler, args, dir, mingwEnv());
+      result = await runProcess(compiler, args, dir, compilerEnv(compiler));
     } catch (err) {
       return { ok: false, message: '无法启动编译器: ' + err.message };
     }
@@ -1446,8 +1830,9 @@ function setupRunIpc() {
     // 编译成功：g++ 的警告输出到 stderr，随返回值带给渲染进程在底部面板展示；
     // 警告不影响运行，直接启动程序，不再询问用户。
     const output = (result.stderr || result.stdout || '').trim();
+    ensureExecutable(exePath);
 
-    const launched = launchExe(exePath, dir, filePath);
+    const launched = await launchExecutable(exePath, dir, filePath, compiler);
     return { ...launched, output };
   });
 }
@@ -1455,6 +1840,11 @@ function setupRunIpc() {
 // ---------------------------------------------------------------------------
 // 窗口与应用生命周期
 // ---------------------------------------------------------------------------
+function getWindowIcon() {
+  const icon = path.join(APP_ROOT, 'build', 'icon.png');
+  return fs.existsSync(icon) ? icon : undefined;
+}
+
 function createWindow() {
   let mainWindowState = windowStateKeeper({
     defaultWidth: 1280,
@@ -1479,6 +1869,7 @@ function createWindow() {
     backgroundColor: urlTheme === 'light' ? '#fafafa' : '#1e1e1e',
     autoHideMenuBar: true,
     title: 'CppEditor',
+    icon: getWindowIcon(),
     frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1545,6 +1936,7 @@ function createSettingWindow() {
     backgroundColor: urlTheme === 'light' ? '#fafafa' : '#1e1e1e',
     autoHideMenuBar: true,
     title: '设置',
+    icon: getWindowIcon(),
     frame: false,
     parent: mainWindow,
     modal: true,

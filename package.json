@@ -5,6 +5,7 @@
   "main": "main.js",
   "author": "cyp",
   "license": "GNUV3",
+  "homepage": "https://github.com/cr-ziji/CppEditor",
   "repository": {
     "type": "git",
     "url": "https://github.com/cr-ziji/CppEditor.git"
@@ -15,7 +16,9 @@
     "postinstall": "npm run sync-vendor && electron-builder install-app-deps",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "sync-vendor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-vendor.ps1"
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "sync-vendor": "node scripts/sync-vendor.js"
   },
   "dependencies": {
     "electron-window-state": "^5.0.3"
@@ -35,6 +38,7 @@
       "**/*",
       "!resources/clangd/**",
       "!resources/mingw/**",
+      "!resources/gcc/**",
       "!CppProject/**",
       "!android/**"
     ],
@@ -42,15 +46,58 @@
       {
         "from": "./resources/clangd",
         "to": "clangd"
-      },
-      {
-        "from": "./resources/mingw",
-        "to": "mingw"
       }
     ],
     "win": {
       "target": "nsis",
-      "icon": "icon.ico"
+      "icon": "icon.png",
+      "extraResources": [
+        {
+          "from": "./resources/mingw",
+          "to": "mingw"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "icon.png",
+      "category": "Development",
+      "maintainer": "cyp <cr-ziji@users.noreply.github.com>",
+      "synopsis": "更现代的 C++ 编辑器",
+      "description": "CppEditor 是一款内置 clangd 与 GCC 工具链的现代 C++ 编辑器。",
+      "desktop": {
+        "entry": {
+          "Name": "CppEditor",
+          "Comment": "更现代的 C++ 编辑器",
+          "Categories": "Development;IDE;"
+        }
+      },
+      "fileAssociations": [
+        {
+          "ext": "c",
+          "name": "C Source File",
+          "mimeType": "text/x-csrc"
+        },
+        {
+          "ext": "cpp",
+          "name": "C++ Source File",
+          "mimeType": "text/x-c++src"
+        },
+        {
+          "ext": "h",
+          "name": "C/C++ Header File",
+          "mimeType": "text/x-chdr"
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "./resources/gcc",
+          "to": "gcc"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

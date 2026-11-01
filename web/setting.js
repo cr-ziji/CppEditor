@@ -27,6 +27,7 @@
             deleteToRecycleBin: true,
         },
         compile: {
+            compilerSource: 'bundled',
             compilerCommand: '',
             linkerCommand: '-static-libgcc',
             languageStandardCpp: 'c++17',
@@ -42,6 +43,7 @@
 
     // 输入控件 id → 设置路径（分组、键名）映射（快捷键页为只读预览，不在其中）
     const FIELD_MAP = [
+        ['compilerSource', 'compile', 'compilerSource'],
         ['compileCommand', 'compile', 'compilerCommand'],
         ['linkCommand', 'compile', 'linkerCommand'],
         ['languageStandardCpp', 'compile', 'languageStandardCpp'],
