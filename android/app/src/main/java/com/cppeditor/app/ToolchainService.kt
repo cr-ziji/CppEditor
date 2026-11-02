@@ -13,7 +13,7 @@ import java.io.File
 const val ANDROID_API_LEVEL = 24
 
 /** 工具链内容版本；与 zip 内 version.txt 不一致时整体重新解压 */
-private const val TOOLCHAIN_VERSION = "gcc-16.2.1"
+private const val TOOLCHAIN_VERSION = "gcc-16.2.1-2"
 
 /**
  * 管理打包在 assets/toolchain-<abi>.zip 中的工具链：真正的 GCC 16（g++ + libstdc++）、
@@ -299,8 +299,10 @@ class ToolchainService(private val ctx: Context) {
      * clangd 兜底 / compile_commands.json 用的参数（clang 语法）。
      * clangd 不认 GCC 的 -B / -wrapper，所以这里只给头文件路径、目标与 sysroot。
      *
-     * 注意：clangd 是 clang 21 二进制，这里沿用包内 libc++ 头文件（c++/v1）；
-     * 真正的编译仍由 g++ + libstdc++（include/c++/16）完成，两者互不影响。
+     * 头文件与真实编译保持一致（libstdc++），这样 <bits/stdc++.h>、<ext/...>
+     * 等 GCC 专有头在编辑器里也能补全/跳转；资源目录里只放 clang 的内建头
+     * （stddef.h 等）。不要再传 -stdlib=libc++：那会让 clangd 只认 c++/v1，
+     * 与 g++ 的实际编译结果不一致。
      */
     fun clangFlags(): List<String> {
         val flags = mutableListOf<String>()
@@ -311,13 +313,14 @@ class ToolchainService(private val ctx: Context) {
             }
         }
         val inc = File(usr, "include")
-        pushIsystem(File(inc, "c++/v1"))
+        pushIsystem(File(inc, "c++/16"))
+        pushIsystem(File(inc, "c++/16/${abi.triple}"))
+        pushIsystem(File(inc, "c++/16/backward"))
         val resDir = clangResourceDir()
         if (resDir != null) pushIsystem(File(resDir, "include"))
         // bionic：asm/ 头文件按架构分开安装
         pushIsystem(File(inc, abi.triple))
         pushIsystem(inc)
-        flags += "-stdlib=libc++"
         if (resDir != null) flags += "-resource-dir=" + resDir.absolutePath
         flags += "-target"
         flags += abi.clangTarget + ANDROID_API_LEVEL
@@ -337,7 +340,11 @@ class ToolchainService(private val ctx: Context) {
         flags += "-B" + File(usr, "libexec/gcc/${abi.triple}/16").absolutePath + "/"
         flags += "-B" + File(usr, "lib/gcc/${abi.triple}/16").absolutePath + "/"
         flags += "--sysroot=" + File(usr, abi.sysDir).absolutePath
-        flags += "-D__ANDROID_API__=$ANDROID_API_LEVEL"
+        // GCC 16 的 Android spec 禁止用 -D__ANDROID_API__ 指定平台版本，
+        // 必须用 -mandroid-version-min（内部会定义 __ANDROID_API__ /
+        // __ANDROID_MIN_SDK_VERSION__），否则报
+        // "error setting the platform version ... use '-mandroid-version-min=<value>'"
+        flags += "-mandroid-version-min=$ANDROID_API_LEVEL"
         // 头文件搜索路径显式给出，避免依赖 GCC 从 argv[0] 推导安装前缀
         // （驱动是被 linker64 加载的，argv[0] 未必是包内路径）
         fun pushIsystem(dir: File) {

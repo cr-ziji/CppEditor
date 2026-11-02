@@ -50,6 +50,8 @@ class CompileService(
         args += f.absolutePath
         args += "-o"
         args += exe.absolutePath
+        // bionic 的 libm 是独立 stub，cmath 里的符号需要显式 -lm
+        args += "-lm"
         args += linkerArgs(settings)
 
         Log.i("CompileService", "compile cmd: ${toolchain.linkerPath()} ${compiler.absolutePath}")
