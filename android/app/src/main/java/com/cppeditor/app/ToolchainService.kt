@@ -4,20 +4,42 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.system.Os
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
 
+/** 目标 Android API 等级（minSdk = 24），决定使用包内 <triple>24 sysroot */
+const val ANDROID_API_LEVEL = 24
+
+/** 工具链内容版本；与 zip 内 version.txt 不一致时整体重新解压 */
+private const val TOOLCHAIN_VERSION = "gcc-16.2.1"
+
 /**
- * 管理打包在 assets/toolchain-<abi>.zip 中的工具链（clang / clang++ / clangd / 头文件 / 动态库）。
- * 按设备 ABI 选择 32 位（armeabi-v7a）或 64 位（arm64-v8a）包，
- * 首次启动解压到应用内部目录，按 linkmap.json 物化符号链接并设置可执行位。
+ * 管理打包在 assets/toolchain-<abi>.zip 中的工具链：真正的 GCC 16（g++ + libstdc++）、
+ * clangd（仅用于编辑器 LSP）、头文件与系统库。
+ *
+ * 关键点：
+ *  - Android 10+ 禁止执行应用数据目录（filesDir）里的文件，因此 GCC 的驱动/cc1/as 等
+ *    通过 `/system/bin/linker64 <程序>` 方式加载运行（mmap 而非 execve），
+ *    GCC 内部再通过 `-wrapper /system/bin/linker64` 让 cc1/cc1plus/as/collect2 也走同一路径。
+ *  - 只有被 collect2 直接 exec 的 `ld` 必须放在 jniLibs（nativeLibraryDir 可执行），
+ *    由 symlinks.json 里的 `@native:` 条目解析成符号链接。
  */
 class ToolchainService(private val ctx: Context) {
 
-    enum class Abi(val zipAsset: String, val target: String, val isystemDir: String) {
-        ARM64("toolchain-arm64-v8a.zip", "aarch64-linux-android", "aarch64-linux-android"),
-        ARM32("toolchain-armeabi-v7a.zip", "armv7a-linux-androideabi", "arm-linux-androideabi");
+    enum class Abi(
+        val zipAsset: String,
+        /** 交叉工具链 triple，也是包内 <triple>/ sysroot 目录名 */
+        val triple: String,
+        /** clangd / clang 侧使用的目标 triple（带 API 版本） */
+        val clangTarget: String,
+    ) {
+        ARM64("toolchain-arm64-v8a.zip", "aarch64-unknown-linux-android", "aarch64-linux-android"),
+        ARM32("toolchain-armeabi-v7a.zip", "armv7-unknown-linux-androideabi", "armv7a-linux-androideabi");
+
+        /** 带 API 后缀的 sysroot 目录名，如 aarch64-unknown-linux-android24 */
+        val sysDir: String get() = triple + ANDROID_API_LEVEL
 
         fun matches(deviceAbi: String): Boolean =
             (this == ARM64 && deviceAbi == "arm64-v8a") ||
@@ -55,38 +77,35 @@ class ToolchainService(private val ctx: Context) {
     val root: File get() = File(ctx.filesDir, "toolchain")
     val usr: File get() = File(root, "usr")
 
-    /** nativeLibraryDir 由 PackageManager 在安装时解压 jniLibs 得到，
-     *  可在 MIUI 等严格 SELinux 设备上绕过 execute_no_trans 限制 */
+    /** nativeLibraryDir 由 PackageManager 在安装时解压 jniLibs 得到（SELinux 允许执行） */
     val nativeLibDir: File? by lazy {
         val dir = File(ctx.applicationInfo.nativeLibraryDir)
         if (dir.isDirectory && dir.listFiles()?.isNotEmpty() == true) dir else null
     }
 
+    /** 需要从 nativeLibraryDir 取的程序名 → jniLibs 文件名 */
     private val nativeExeNames = mapOf(
         "clangd" to "libclangd.so",
-        "clang-21" to "libclang21.so",
-        "gcc" to "libgcc.so",
-        "g++" to "libgpp.so",
-        "lld" to "liblld.so",
-        "ld.lld" to "libldlld.so",
-        "ld" to "liblld.so",
-        "ld64.lld" to "liblld.so",
-        "lld-link" to "liblld.so",
-        "wasm-ld" to "liblld.so",
-        "arm-linux-androideabi-ld" to "liblld.so",
-        "armv7a-linux-androideabi-ld" to "liblld.so",
-        "aarch64-linux-android-ld" to "liblld.so",
+        "ld" to "libldbfd.so",
     )
+
+    /** 用来加载 filesDir 内可执行文件的系统动态链接器 */
+    fun linkerPath(): String =
+        if (abi == Abi.ARM64) "/system/bin/linker64" else "/system/bin/linker"
 
     private val assetZip: String get() = abi.zipAsset
 
-    /** 工具链是否已解压就绪（g++/clangd 等可执行文件已物化 + ELF 完整） */
-    fun ready(): Boolean = File(usr, "lib").isDirectory && binary("clang-21") != null && verifyExtracted()
+    private fun versionOk(): Boolean {
+        val f = File(root, "version.txt")
+        return f.isFile && runCatching { f.readText().trim() }.getOrNull() == TOOLCHAIN_VERSION
+    }
+
+    /** 工具链是否已解压就绪（版本标记一致 + 关键文件完整） */
+    fun ready(): Boolean = versionOk() && verifyExtracted()
 
     /**
-     * 首次启动在后台线程解压工具链，避免主线程长时间阻塞导致启动卡死 / ANR
-     * （32 位设备解压 80MB+ 需要数分钟）。期间广播 toolchain:progress（{"done":n}），
-     * 完成广播 toolchain:ready（"true"/"false"）。
+     * 首次启动在后台线程解压工具链，避免主线程长时间阻塞导致启动卡死 / ANR。
+     * 期间广播 toolchain:progress（{"done":n}），完成广播 toolchain:ready（"true"/"false"）。
      */
     fun ensureExtracted(onDone: (Boolean) -> Unit = {}) {
         if (ready()) {
@@ -94,13 +113,11 @@ class ToolchainService(private val ctx: Context) {
             return
         }
         Thread {
-            val ok = runCatching {
-                unzipAssets { done -> if (done % 25 == 0) postToolchain("toolchain:progress", """{"done":$done}""") }
-                applyLinkmap()
-                makeExecutable()
-                fixBuiltinLibs()
-                verifyExtracted()
-            }.getOrDefault(false)
+            if (root.exists() && !versionOk()) {
+                // 旧版本（clang 工具链或未完成解压）残留，整体清掉避免文件混杂
+                runCatching { root.deleteRecursively() }
+            }
+            val ok = prepare()
             EventBus.post("toolchain:ready", ok.toString())
             onDone(ok)
         }.apply { isDaemon = true }.start()
@@ -114,20 +131,24 @@ class ToolchainService(private val ctx: Context) {
             } catch (e: Exception) {
                 Log.w("ToolchainService", "delete toolchain failed: ${e.message}")
             }
-            val ok = runCatching {
-                unzipAssets { done -> if (done % 25 == 0) postToolchain("toolchain:progress", """{"done":$done}""") }
-                applyLinkmap()
-                makeExecutable()
-                fixBuiltinLibs()
-                verifyExtracted()
-            }.getOrDefault(false)
+            val ok = prepare()
             EventBus.post("toolchain:ready", ok.toString())
             onDone(ok)
         }.apply { isDaemon = true }.start()
     }
 
+    private fun prepare(): Boolean = runCatching {
+        unzipAssets { done -> if (done % 25 == 0) postToolchain("toolchain:progress", """{"done":$done}""") }
+        applySymlinks()
+        makeExecutable()
+        verifyExtracted()
+    }.getOrDefault(false)
+
     private fun verifyExtracted(): Boolean {
-        val critical = listOf("usr/lib/libLLVM.so", "usr/lib/libclang-cpp.so")
+        val critical = listOf(
+            "usr/bin/${abi.triple}-g++",
+            "usr/lib/libestdc++.so",
+        )
         for (rel in critical) {
             val f = File(root, rel)
             if (!f.isFile) {
@@ -143,11 +164,16 @@ class ToolchainService(private val ctx: Context) {
                     off += n
                 }
             }
-            if (header[0] != 0x7f.toByte() || header[1] != 'E'.code.toByte() || header[2] != 'L'.code.toByte() || header[3] != 'F'.code.toByte()) {
+            if (header[0] != 0x7f.toByte() || header[1] != 'E'.code.toByte() ||
+                header[2] != 'L'.code.toByte() || header[3] != 'F'.code.toByte()) {
                 Log.e("ToolchainService", "invalid ELF in $rel (${f.length()} bytes)")
                 return false
             }
-            Log.i("ToolchainService", "verified $rel (${f.length()} bytes)")
+        }
+        val cc1plus = File(usr, "libexec/gcc/${abi.triple}/16/cc1plus")
+        if (!cc1plus.isFile) {
+            Log.w("ToolchainService", "missing: cc1plus")
+            return false
         }
         return true
     }
@@ -156,51 +182,45 @@ class ToolchainService(private val ctx: Context) {
         Handler(Looper.getMainLooper()).post { EventBus.post(channel, payload) }
     }
 
-    /** 符号链接在打包时以 linkmap.json（link 路径 -> 实体文件路径）表示，这里用拷贝物化 */
-    private fun applyLinkmap() {
-        val lm = File(root, "linkmap.json")
-        if (!lm.isFile) return
-        val map = runCatching { JSONObject(lm.readText()) }.getOrNull() ?: return
+    private fun lexists(f: File): Boolean =
+        runCatching { Os.lstat(f.absolutePath); true }.getOrDefault(false)
+
+    /**
+     * zip 里不含符号链接，symlinks.json 记录「链接路径 → 目标」：
+     *  - `@native:libfoo.so` → nativeLibraryDir/libfoo.so（可执行的 GCC 链接器）
+     *  - 其他 → 相对链接所在目录的路径（sysroot 的 include/lib64/libstdc++ 等）
+     */
+    private fun applySymlinks() {
+        val f = File(root, "symlinks.json")
+        if (!f.isFile) return
+        val map = runCatching { JSONObject(f.readText()) }.getOrNull() ?: return
+        val native = nativeLibDir
+        var created = 0
+        var failed = 0
         val keys = map.keys()
         while (keys.hasNext()) {
             val link = keys.next()
-            val target = map.optString(link)
-            val src = File(root, target)
-            val dst = File(root, link)
-            if (!src.isFile || dst.exists()) continue
-            runCatching {
-                dst.parentFile?.mkdirs()
-                src.copyTo(dst)
+            var target = map.optString(link)
+            if (target.startsWith("@native:")) {
+                target = File(native ?: continue, target.removePrefix("@native:")).absolutePath
             }
-        }
-    }
-
-    /**
-     * 工具链 zip 中 clang builtins 库用 Android NDK 命名约定（lib/linux/libclang_rt.builtins-<arch>-android.a），
-     * 但 clang 驱动按标准 LLVM 约定查找 lib/<triple>/libclang_rt.builtins.a。
-     * 这里创建缺失的目录+拷贝文件，让链接器能正确找到 builtins。
-     */
-    private fun fixBuiltinLibs() {
-        val clangLib = File(usr, "lib/clang/21/lib") ?: return
-        if (!clangLib.isDirectory) return
-        val linuxDir = File(clangLib, "linux")
-        if (!linuxDir.isDirectory) return
-        // clang 内部将 target triple 规范化（如 aarch64-linux-android → aarch64-unknown-linux-android）
-        val candidates = listOf(
-            abi.target,
-            abi.target.replaceFirst("-linux-", "-unknown-linux-")
-        )
-        linuxDir.listFiles()?.filter { it.name.startsWith("libclang_rt.builtins") && it.name.endsWith(".a") }?.forEach { src ->
-            for (triple in candidates) {
-                val tripleDir = File(clangLib, triple)
-                if (tripleDir.isDirectory) continue
-                tripleDir.mkdirs()
-                val dst = File(tripleDir, "libclang_rt.builtins.a")
-                if (!dst.exists()) {
-                    runCatching { src.copyTo(dst) }
+            val dst = File(root, link)
+            if (lexists(dst)) continue
+            dst.parentFile?.mkdirs()
+            val ok = runCatching { Os.symlink(target, dst.absolutePath) }.isSuccess
+            if (ok) {
+                created++
+            } else {
+                failed++
+                Log.w("ToolchainService", "symlink $link -> $target failed")
+                // 回退：仅相对目标可以拷贝物化（绝对路径的 jniLibs 目标不可拷贝到 filesDir 执行）
+                if (!target.startsWith("/")) {
+                    val src = File(dst.parentFile, target)
+                    if (src.isFile) runCatching { src.copyTo(dst, overwrite = true) }
                 }
             }
         }
+        Log.i("ToolchainService", "symlinks created=$created failed=$failed")
     }
 
     /** 从 assets/toolchain-<abi>.zip 解压（单个 zip 避免 AGP 对深层目录的资产合并丢文件问题） */
@@ -226,7 +246,6 @@ class ToolchainService(private val ctx: Context) {
                                         outs.write(buf, 0, n)
                                     }
                                     outs.flush()
-                                    if (name.endsWith(".so")) outs.fd.sync()
                                 }
                                 done++
                             }
@@ -240,21 +259,18 @@ class ToolchainService(private val ctx: Context) {
         }
     }
 
+    /** 按名字取可执行文件：jniLibs 里的优先（SELinux 可执行），其次 usr/bin */
     fun binary(name: String): File? {
-        if (File(usr, "lib").isDirectory) {
-            val dir = nativeLibDir
-            if (dir != null) {
-                val soName = nativeExeNames[name]
-                if (soName != null) {
-                    val f = File(dir, soName)
-                    if (f.isFile) return f
-                }
+        val dir = nativeLibDir
+        if (dir != null) {
+            val soName = nativeExeNames[name]
+            if (soName != null) {
+                val f = File(dir, soName)
+                if (f.isFile) return f
             }
         }
         val a = File(usr, "bin/$name")
-        if (a.isFile) return a
-        val b = File(root, "bin/$name")
-        if (b.isFile) return b
+        if (a.exists()) return a
         return null
     }
 
@@ -262,12 +278,30 @@ class ToolchainService(private val ctx: Context) {
 
     fun clangdReady(): Boolean = clangdPath() != null
 
-    fun clangReady(): Boolean = binary("clang") != null && binary("clang++") != null
+    /** GCC 驱动（<triple>-gcc / <triple>-g++，包内同一个工具链的两个入口） */
+    fun compiler(isC: Boolean): File? {
+        val name = if (isC) "${abi.triple}-gcc" else "${abi.triple}-g++"
+        val f = File(usr, "bin/$name")
+        return if (f.isFile) f else null
+    }
 
-    /** gcc/g++（工具链内为 clang 的 gcc 兼容入口）是否可用 */
-    fun compilerReady(): Boolean = binary("gcc") != null && binary("g++") != null
+    fun compilerReady(): Boolean =
+        compiler(true) != null && compiler(false) != null &&
+            File(usr, "libexec/gcc/${abi.triple}/16/cc1plus").isFile
 
-    /** clangd 兜底编译参数：sysroot + 头文件搜索路径 + 目标平台 */
+    /** clang 内建头文件所在目录（<usr>/lib/clang/<ver>），clangd 必须显式指定 */
+    fun clangResourceDir(): File? =
+        File(usr, "lib/clang").listFiles()
+            ?.filter { it.isDirectory && File(it, "include").isDirectory }
+            ?.maxByOrNull { it.name }
+
+    /**
+     * clangd 兜底 / compile_commands.json 用的参数（clang 语法）。
+     * clangd 不认 GCC 的 -B / -wrapper，所以这里只给头文件路径、目标与 sysroot。
+     *
+     * 注意：clangd 是 clang 21 二进制，这里沿用包内 libc++ 头文件（c++/v1）；
+     * 真正的编译仍由 g++ + libstdc++（include/c++/16）完成，两者互不影响。
+     */
     fun clangFlags(): List<String> {
         val flags = mutableListOf<String>()
         fun pushIsystem(dir: File) {
@@ -278,16 +312,47 @@ class ToolchainService(private val ctx: Context) {
         }
         val inc = File(usr, "include")
         pushIsystem(File(inc, "c++/v1"))
-        File(usr, "lib/clang").listFiles()?.sortedBy { it.name }?.forEach { d ->
-            pushIsystem(File(d, "include"))
-        }
-        pushIsystem(File(inc, abi.isystemDir))
+        val resDir = clangResourceDir()
+        if (resDir != null) pushIsystem(File(resDir, "include"))
+        // bionic：asm/ 头文件按架构分开安装
+        pushIsystem(File(inc, abi.triple))
         pushIsystem(inc)
+        flags += "-stdlib=libc++"
+        if (resDir != null) flags += "-resource-dir=" + resDir.absolutePath
         flags += "-target"
-        flags += abi.target
-        flags += "-D__ANDROID_API__=24"
-        flags += "--sysroot=" + usr.absolutePath
-        flags += "-resource-dir=" + File(usr, "lib/clang/21").absolutePath
+        flags += abi.clangTarget + ANDROID_API_LEVEL
+        flags += "-D__ANDROID_API__=$ANDROID_API_LEVEL"
+        flags += "--sysroot=" + File(usr, abi.sysDir).absolutePath
+        return flags
+    }
+
+    /**
+     * 交给真实 GCC 驱动的参数：程序搜索路径、sysroot、API 宏，
+     * 以及让 GCC 的所有子进程（cc1/cc1plus/as/collect2）都经 linker64 加载。
+     */
+    fun gccFlags(): List<String> {
+        val flags = mutableListOf<String>()
+        val inc = File(usr, "include")
+        flags += "-B" + File(usr, "bin").absolutePath + "/"
+        flags += "-B" + File(usr, "libexec/gcc/${abi.triple}/16").absolutePath + "/"
+        flags += "-B" + File(usr, "lib/gcc/${abi.triple}/16").absolutePath + "/"
+        flags += "--sysroot=" + File(usr, abi.sysDir).absolutePath
+        flags += "-D__ANDROID_API__=$ANDROID_API_LEVEL"
+        // 头文件搜索路径显式给出，避免依赖 GCC 从 argv[0] 推导安装前缀
+        // （驱动是被 linker64 加载的，argv[0] 未必是包内路径）
+        fun pushIsystem(dir: File) {
+            flags += "-isystem"
+            flags += dir.absolutePath
+        }
+        pushIsystem(File(inc, "c++/16"))
+        pushIsystem(File(inc, "c++/16/${abi.triple}"))
+        pushIsystem(File(inc, "c++/16/backward"))
+        pushIsystem(File(usr, "lib/gcc/${abi.triple}/16/include"))
+        // bionic：asm/ 头文件按架构分目录安装
+        pushIsystem(File(inc, abi.triple))
+        pushIsystem(inc)
+        flags += "-wrapper"
+        flags += linkerPath()
         return flags
     }
 
@@ -297,15 +362,11 @@ class ToolchainService(private val ctx: Context) {
         val bin = File(usr, "bin").absolutePath
         val tmp = File(ctx.cacheDir, "tmp").apply { mkdirs() }
         val nativeLib = nativeLibDir?.absolutePath.orEmpty()
-        val path = buildString {
-            if (nativeLib.isNotEmpty()) append(nativeLib)
-            if (nativeLib.isNotEmpty() && bin.isNotEmpty()) append(":")
-            if (bin.isNotEmpty()) append(bin)
-            val sysPath = System.getenv("PATH").orEmpty()
-            if (sysPath.isNotEmpty()) append(":").append(sysPath)
-        }
+        val path = listOf(nativeLib, bin, System.getenv("PATH").orEmpty())
+            .filter { it.isNotEmpty() }
+            .joinToString(":")
         return mapOf(
-            "LD_LIBRARY_PATH" to if (nativeLib.isNotEmpty()) "$lib:$nativeLib" else lib,
+            "LD_LIBRARY_PATH" to listOf(lib, nativeLib).filter { it.isNotEmpty() }.joinToString(":"),
             "PATH" to path,
             "HOME" to ctx.filesDir.absolutePath,
             "TMPDIR" to tmp.absolutePath,
@@ -313,9 +374,8 @@ class ToolchainService(private val ctx: Context) {
     }
 
     private fun makeExecutable() {
-        val bin = File(usr, "bin")
-        if (bin.isDirectory) bin.listFiles()?.forEach { it.setExecutable(true, false) }
-        val lib = File(usr, "lib")
-        if (lib.isDirectory) lib.listFiles()?.forEach { if (it.name.endsWith(".so")) it.setExecutable(true, false) }
+        File(usr, "bin").listFiles()?.forEach { it.setExecutable(true, false) }
+        File(usr, "libexec/gcc/${abi.triple}/16").listFiles()?.forEach { it.setExecutable(true, false) }
+        File(usr, "lib").listFiles()?.forEach { if (it.name.endsWith(".so")) it.setExecutable(true, false) }
     }
 }

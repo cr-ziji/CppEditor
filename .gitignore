@@ -15,6 +15,7 @@ android/build
 android/app/build
 android/app/src/main/assets/toolchain
 android/app/src/main/assets/toolchain-*.zip
+android/app/src/main/toolchain
 android/local.properties
 
 temp

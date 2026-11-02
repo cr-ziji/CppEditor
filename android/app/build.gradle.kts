@@ -54,6 +54,11 @@ android {
         }
     }
 
+    // 工具链 zip 本身已是压缩格式，assets 里再压一次只会浪费安装包体积与首次解压时间
+    androidResources {
+        noCompress += listOf("zip")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

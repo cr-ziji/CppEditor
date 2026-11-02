@@ -33,76 +33,40 @@ class CompileService(
         val exe = File(f.parentFile, f.nameWithoutExtension)
         exe.delete()
 
-        val compiler = if (isC) toolchain.binary("gcc")?.absolutePath ?: "gcc"
-                       else toolchain.binary("g++")?.absolutePath ?: "g++"
-        val objFile = File(f.parentFile, f.nameWithoutExtension + ".o")
+        val compiler = toolchain.compiler(isC)
+        if (compiler == null) { resolve(callbackId, errObject("找不到编译器 ${toolchain.abi.triple}-g++")); return }
         val env = toolchain.runEnv()
 
-        // ── 第 1 步：编译到 .o ──
-        val cArgs = mutableListOf<String>()
-        cArgs += toolchain.clangFlags()
-        cArgs += compileArgs(isC, settings)
-        cArgs += f.absolutePath
-        cArgs += "-c"
-        cArgs += "-o"
-        cArgs += objFile.absolutePath
+        // 真正的 g++（GCC 16）单步完成编译 + 链接：
+        // 驱动本身由 linker64 加载（filesDir 不可 exec），内部 cc1plus/as/collect2
+        // 靠 gccFlags() 里的 -wrapper /system/bin/linker64 走同一条路径，
+        // collect2 最后 exec 的 ld 则由 jniLibs 里的 libldbfd.so 提供。
+        val args = mutableListOf<String>()
+        args += toolchain.gccFlags()
+        args += compileArgs(isC, settings)
+        args += listOf("-fPIE", "-pie")
+        // 静态链接 C++ 运行时（libstdc++ / libgcc），避免设备端缺库
+        args += listOf("-static-libstdc++", "-static-libgcc")
+        args += f.absolutePath
+        args += "-o"
+        args += exe.absolutePath
+        args += linkerArgs(settings)
 
-        val compileRes = runProcess(compiler, cArgs, f.parentFile, env)
-        Log.i("CompileService", "compile step code=${compileRes.code}")
-        if (compileRes.code != 0 || !objFile.isFile) {
+        Log.i("CompileService", "compile cmd: ${toolchain.linkerPath()} ${compiler.absolutePath}")
+        Log.i("CompileService", "compile args: $args")
+        val res = runProcess(
+            toolchain.linkerPath(),
+            listOf(compiler.absolutePath) + args,
+            f.parentFile, env, timeoutMs = 300_000,
+        )
+        Log.i("CompileService", "compile code=${res.code}")
+        if (res.err.isNotEmpty()) Log.w("CompileService", "compile stderr: ${res.err.take(2000)}")
+        if (res.code != 0 || !exe.isFile) {
             resolve(callbackId, JSONObject()
                 .put("ok", false).put("stage", "compile")
-                .put("stderr", compileRes.err).put("stdout", compileRes.out).toString())
+                .put("stderr", res.err).put("stdout", res.out).toString())
             return
         }
-
-        // ── 第 2 步：链接 ──
-        // 找 lld 链接器：优先 nativeLibDir（SELinux 可执行）
-        val ldExe = findLldLinker()
-        if (ldExe == null) {
-            resolve(callbackId, errObject("找不到链接器 lld"))
-            objFile.delete()
-            return
-        }
-
-        val linkArgs = mutableListOf<String>()
-        linkArgs += "-flavor"
-        linkArgs += "ld"
-        linkArgs += "--sysroot=${toolchain.usr.absolutePath}"
-        linkArgs += "-L${toolchain.usr.absolutePath}/lib"
-        toolchain.nativeLibDir?.let { linkArgs += "-L${it.absolutePath}" }
-        if (toolchain.abi == ToolchainService.Abi.ARM32) linkArgs += "-L/system/lib"
-        else linkArgs += "-L/system/lib64"
-        val usrLib = File(toolchain.usr, "lib")
-        val crtBegin = File(usrLib, "crtbegin_dynamic.o")
-        val crtEnd = File(usrLib, "crtend_android.o")
-        if (crtBegin.isFile) linkArgs += crtBegin.absolutePath
-        linkArgs += objFile.absolutePath
-        if (!isC) { linkArgs += "-lc++"; linkArgs += "-lc++abi" }
-        linkArgs += "-lc"
-        linkArgs += "-lm"
-        linkArgs += "-ldl"
-        linkArgs += "-lgcc"
-        if (crtEnd.isFile) linkArgs += crtEnd.absolutePath
-        linkArgs += "-pie"
-        linkArgs += "-o"
-        linkArgs += exe.absolutePath
-        val userLdArgs = linkerArgs(settings).filter { it != "-static-libgcc" }
-        linkArgs += userLdArgs
-
-        val linkRes = runProcess(ldExe.absolutePath, linkArgs, f.parentFile, env)
-        Log.i("CompileService", "link step code=${linkRes.code} exe=$ldExe")
-        Log.i("CompileService", "link args: $linkArgs")
-        if (linkRes.err.isNotEmpty()) Log.e("CompileService", "link stderr: ${linkRes.err.take(2000)}")
-        if (linkRes.code != 0 || !exe.isFile) {
-            resolve(callbackId, JSONObject()
-                .put("ok", false).put("stage", "compile")
-                .put("stderr", linkRes.err + compileRes.err.ifEmpty { "" })
-                .put("stdout", linkRes.out).toString())
-            objFile.delete()
-            return
-        }
-        objFile.delete()
 
         files.projectDir?.let { runCatching { writeCompileCommands(it, toolchain, settings) } }
 
@@ -110,22 +74,8 @@ class CompileService(
         files.syncProject()
         resolve(callbackId, JSONObject()
             .put("ok", true).put("stage", "compile")
-            .put("warnings", compileRes.err.ifEmpty { "" })
+            .put("warnings", res.err.ifEmpty { "" })
             .put("executable", runExe.absolutePath).toString())
-    }
-
-    /** 找到可执行的 lld 链接器 */
-    private fun findLldLinker(): File? {
-        // nativeLibDir 里的 libldlld.so 可以执行（PackageManager SELinux 上下文）
-        val native = toolchain.nativeLibDir
-        if (native != null) {
-            val f = File(native, "libldlld.so")
-            if (f.isFile) return f
-        }
-        // 回退：usr/bin/ld.lld（适用于 SELinux 宽松的设备如 Android 9）
-        val usrBin = File(toolchain.usr, "bin/ld.lld")
-        if (usrBin.isFile) return usrBin
-        return null
     }
 
     /** 确保可执行文件在 app 内部存储（SELinux 可执行） */
