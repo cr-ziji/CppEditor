@@ -109,6 +109,10 @@ class ToolchainService(private val ctx: Context) {
      */
     fun ensureExtracted(onDone: (Boolean) -> Unit = {}) {
         if (ready()) {
+            // 应用更新（install -r）后 nativeLibraryDir 会变（.../~~hash==/app-xxx/lib/...），
+            // 上次解压时建的 @native: 符号链接（ld 等）就会指向已删除的旧目录。
+            // 版本号没变时不会重新解压，必须在这里按当前目录重建，否则编译时找不到 ld。
+            refreshNativeLinks()
             onDone(true)
             return
         }
@@ -194,33 +198,68 @@ class ToolchainService(private val ctx: Context) {
         val f = File(root, "symlinks.json")
         if (!f.isFile) return
         val map = runCatching { JSONObject(f.readText()) }.getOrNull() ?: return
-        val native = nativeLibDir
         var created = 0
         var failed = 0
         val keys = map.keys()
         while (keys.hasNext()) {
             val link = keys.next()
-            var target = map.optString(link)
-            if (target.startsWith("@native:")) {
-                target = File(native ?: continue, target.removePrefix("@native:")).absolutePath
-            }
+            val raw = map.optString(link)
             val dst = File(root, link)
+            if (raw.startsWith("@native:")) {
+                ensureNativeLink(dst, raw.removePrefix("@native:"))
+                continue
+            }
             if (lexists(dst)) continue
             dst.parentFile?.mkdirs()
-            val ok = runCatching { Os.symlink(target, dst.absolutePath) }.isSuccess
+            val ok = runCatching { Os.symlink(raw, dst.absolutePath) }.isSuccess
             if (ok) {
                 created++
             } else {
                 failed++
-                Log.w("ToolchainService", "symlink $link -> $target failed")
+                Log.w("ToolchainService", "symlink $link -> $raw failed")
                 // 回退：仅相对目标可以拷贝物化（绝对路径的 jniLibs 目标不可拷贝到 filesDir 执行）
-                if (!target.startsWith("/")) {
-                    val src = File(dst.parentFile, target)
+                if (!raw.startsWith("/")) {
+                    val src = File(dst.parentFile, raw)
                     if (src.isFile) runCatching { src.copyTo(dst, overwrite = true) }
                 }
             }
         }
         Log.i("ToolchainService", "symlinks created=$created failed=$failed")
+    }
+
+    /** 让 `@native:libxxx.so` 链接指向当前安装的 nativeLibraryDir（目标变了就重建） */
+    private fun ensureNativeLink(dst: File, soName: String) {
+        val native = nativeLibDir
+        if (native == null) {
+            Log.w("ToolchainService", "nativeLibraryDir unavailable, skip ${dst.absolutePath}")
+            return
+        }
+        val expected = File(native, soName).absolutePath
+        val current = runCatching { Os.readlink(dst.absolutePath) }.getOrNull()
+        // 链接存在且目标一致才复用；dangling 的旧链接（上次安装的目录已被删除）必须重建
+        if (current == expected && dst.exists()) return
+        if (current != null || lexists(dst)) runCatching { dst.delete() }
+        dst.parentFile?.mkdirs()
+        if (runCatching { Os.symlink(expected, dst.absolutePath) }.isFailure) {
+            Log.w("ToolchainService", "native symlink failed: ${dst.absolutePath} -> $expected")
+        }
+    }
+
+    /**
+     * 按当前 nativeLibraryDir 重建所有 `@native:` 链接。应用每次更新后安装目录都会变，
+     * 而工具链版本没变时不会重新解压，链接会一直指向旧目录 → g++ 报找不到 ld。
+     */
+    fun refreshNativeLinks() {
+        val f = File(root, "symlinks.json")
+        if (!f.isFile) return
+        val map = runCatching { JSONObject(f.readText()) }.getOrNull() ?: return
+        val keys = map.keys()
+        while (keys.hasNext()) {
+            val link = keys.next()
+            val raw = map.optString(link)
+            if (!raw.startsWith("@native:")) continue
+            ensureNativeLink(File(root, link), raw.removePrefix("@native:"))
+        }
     }
 
     /** 从 assets/toolchain-<abi>.zip 解压（单个 zip 避免 AGP 对深层目录的资产合并丢文件问题） */

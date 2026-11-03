@@ -35,6 +35,15 @@ class CompileService(
 
         val compiler = toolchain.compiler(isC)
         if (compiler == null) { resolve(callbackId, errObject("找不到编译器 ${toolchain.abi.triple}-g++")); return }
+        // 应用更新后 nativeLibraryDir 会变，旧解压留下的 @native: 链接（ld）会悬空；
+        // 这里按当前安装目录重建一次，避免 g++ 链接阶段报「找不到 ld」。
+        toolchain.refreshNativeLinks()
+        val ld = File(toolchain.usr, "bin/ld")
+        if (!ld.exists()) {
+            Log.e("CompileService", "ld missing: ${ld.absolutePath}")
+            resolve(callbackId, errObject("找不到链接器 ld（工具链未就绪或 libldbfd.so 缺失），请重新解压工具链"))
+            return
+        }
         val env = toolchain.runEnv()
 
         // 真正的 g++（GCC 16）单步完成编译 + 链接：
