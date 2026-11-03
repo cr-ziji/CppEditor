@@ -59,9 +59,17 @@ class CompileService(
         args += f.absolutePath
         args += "-o"
         args += exe.absolutePath
-        // bionic 的 libm 是独立 stub，cmath 里的符号需要显式 -lm
+        // bionic 的 libm 是独立 stub，cmath 里的符号需要显式 -lm。
+        // 前面的 -Wl,-Bdynamic 确保 libc/libm 一定按动态库搜索：这个工具链没有
+        // libc.a/libm.a，一旦 ld 处于 -Bstatic/-static 状态就会报
+        // "cannot find -lm ... have you installed the static version"。
+        args += "-Wl,-Bdynamic"
         args += "-lm"
         args += linkerArgs(settings)
+
+        val staticNote = if (hasUnsupportedStatic(settings)) {
+            "[提示] 该工具链不支持完全静态链接（没有 libc.a/libm.a），已忽略 -static/-static-pie。\n"
+        } else ""
 
         Log.i("CompileService", "compile cmd: ${toolchain.linkerPath()} ${compiler.absolutePath}")
         Log.i("CompileService", "compile args: $args")
@@ -75,7 +83,8 @@ class CompileService(
         if (res.code != 0 || !exe.isFile) {
             resolve(callbackId, JSONObject()
                 .put("ok", false).put("stage", "compile")
-                .put("stderr", res.err).put("stdout", res.out).toString())
+                .put("command", (listOf(compiler.absolutePath) + args).joinToString(" "))
+                .put("stderr", staticNote + res.err).put("stdout", res.out).toString())
             return
         }
 

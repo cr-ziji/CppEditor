@@ -33,13 +33,34 @@ fun compileArgs(isC: Boolean, settings: SettingsService): List<String> {
     val cs = settings.compileSettings()
     val args = mutableListOf("-std=" + (if (isC) cs.languageStandardC else cs.languageStandardCpp))
     args += warningFlags(cs.warningLevel)
-    args += splitArgs(cs.compilerCommand)
+    args += stripUnsupportedStatic(splitArgs(cs.compilerCommand))
     return args
 }
 
 /** 链接参数（放在编译命令末尾） */
 fun linkerArgs(settings: SettingsService): List<String> {
-    return splitArgs(settings.compileSettings().linkerCommand)
+    return stripUnsupportedStatic(splitArgs(settings.compileSettings().linkerCommand))
+}
+
+/**
+ * 本工具链只有 bionic 的 .so stub 与 libc_stb/libm_stb，没有 libc.a / libm.a，
+ * 因此 `-static` / `-static-pie` 必然在链接阶段失败：
+ *   ld: cannot find -lm / -lc ... have you installed the static version ...
+ * clangd 也不认这些参数。这里统一剔除（`-static-libgcc` / `-static-libstdc++`
+ * 不受影响：它们只是把 GCC 自己的运行库静态化，bionic 仍然是动态的）。
+ */
+fun stripUnsupportedStatic(args: List<String>): List<String> {
+    return args.filterNot {
+        it == "-static" || it == "-static-pie" || it == "--static" ||
+            it == "-Wl,-Bstatic" || it == "-Wl,--static"
+    }
+}
+
+/** 用户参数里是否带有被剔除的完全静态链接开关（用于给用户提示） */
+fun hasUnsupportedStatic(settings: SettingsService): Boolean {
+    val cs = settings.compileSettings()
+    val raw = splitArgs(cs.compilerCommand) + splitArgs(cs.linkerCommand)
+    return stripUnsupportedStatic(raw).size != raw.size
 }
 
 /** 警告级别 0-4 → 编译警告标志（与 Electron 版 WARNING_LEVELS 一致） */
