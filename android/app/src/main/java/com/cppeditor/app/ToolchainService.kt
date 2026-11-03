@@ -295,6 +295,9 @@ class ToolchainService(private val ctx: Context) {
             ?.filter { it.isDirectory && File(it, "include").isDirectory }
             ?.maxByOrNull { it.name }
 
+    /** 包内 clang 资源目录版本；未解压完成时用它推算路径（clangd 21 对应 lib/clang/21） */
+    private val clangResourceFallback: File get() = File(usr, "lib/clang/21")
+
     /**
      * clangd 兜底 / compile_commands.json 用的参数（clang 语法）。
      * clangd 不认 GCC 的 -B / -wrapper，所以这里只给头文件路径、目标与 sysroot。
@@ -306,27 +309,41 @@ class ToolchainService(private val ctx: Context) {
      */
     fun clangFlags(): List<String> {
         val flags = mutableListOf<String>()
+        // 注意：这里不做存在性判断。clangd 启动早期（工具链尚未解压完成）也会调用
+        // 本函数，如果因为目录暂时不存在而跳过，整场会话都没有 C++ 头文件路径，
+        // <bits/stdc++.h>/<vector> 就永远找不到。clang 会静默忽略不存在的 -isystem。
         fun pushIsystem(dir: File) {
-            if (dir.isDirectory) {
-                flags += "-isystem"
-                flags += dir.absolutePath
-            }
+            flags += "-isystem"
+            flags += dir.absolutePath
         }
         val inc = File(usr, "include")
         pushIsystem(File(inc, "c++/16"))
         pushIsystem(File(inc, "c++/16/${abi.triple}"))
         pushIsystem(File(inc, "c++/16/backward"))
-        val resDir = clangResourceDir()
-        if (resDir != null) pushIsystem(File(resDir, "include"))
+        val resDir = clangResourceDir() ?: clangResourceFallback
+        pushIsystem(File(resDir, "include"))
         // bionic：asm/ 头文件按架构分开安装
         pushIsystem(File(inc, abi.triple))
         pushIsystem(inc)
-        if (resDir != null) flags += "-resource-dir=" + resDir.absolutePath
+        flags += "-resource-dir=" + resDir.absolutePath
         flags += "-target"
         flags += abi.clangTarget + ANDROID_API_LEVEL
         flags += "-D__ANDROID_API__=$ANDROID_API_LEVEL"
         flags += "--sysroot=" + File(usr, abi.sysDir).absolutePath
         return flags
+    }
+
+    /** 诊断用：列出 clangFlags() 里每个 -isystem 目录是否存在（解压不全时一眼看出） */
+    fun clangIncludeDirs(): List<Pair<File, Boolean>> {
+        val flags = clangFlags()
+        val out = mutableListOf<Pair<File, Boolean>>()
+        for (i in flags.indices) {
+            if (flags[i] == "-isystem" && i + 1 < flags.size) {
+                val d = File(flags[i + 1])
+                out += d to d.isDirectory
+            }
+        }
+        return out
     }
 
     /**

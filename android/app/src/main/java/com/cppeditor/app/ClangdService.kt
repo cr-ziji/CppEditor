@@ -101,10 +101,19 @@ class ClangdService(
 
         status("starting", "正在启动 clangd...")
 
+        // 把生效的兜底参数写进 LSP 日志：clangd 找不到头文件时，用户回传日志即可定位
+        // 是参数缺失、工具链未解压完，还是 compile_commands.json 覆盖了这些参数。
+        val effective = fallbackFlags()
+        log("[clangd] fallbackFlags: " + effective.joinToString(" "))
+        if (!toolchain.ready()) log("[clangd] 工具链尚未就绪，头文件路径可能暂时无效")
+        for ((dir, exists) in toolchain.clangIncludeDirs()) {
+            if (!exists) log("[clangd] 缺少头文件目录: ${dir.absolutePath}")
+        }
+
         return JSONObject()
             .put("ok", true)
             .put("clangdPath", toolchain.clangdPath())
-            .put("fallbackFlags", org.json.JSONArray(fallbackFlags()))
+            .put("fallbackFlags", org.json.JSONArray(effective))
             .put("offsetEncoding", "utf-16")
             .put("projectDir", files.projectDir?.absolutePath ?: files.projectsDir.absolutePath)
     }

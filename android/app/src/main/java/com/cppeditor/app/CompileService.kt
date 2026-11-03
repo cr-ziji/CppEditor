@@ -70,7 +70,14 @@ class CompileService(
             return
         }
 
-        files.projectDir?.let { runCatching { writeCompileCommands(it, toolchain, settings) } }
+        files.projectDir?.let {
+            runCatching { writeCompileCommands(it, toolchain, settings) }
+            // 编译成功后参数可能已变化（例如设置了新的语言标准），通知 clangd 重载
+            EventBus.post(
+                "lsp:compile-db-updated",
+                JSONStr.quote(File(it, "compile_commands.json").absolutePath),
+            )
+        }
 
         val runExe = ensureExeInternal(exe)
         files.syncProject()

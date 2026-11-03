@@ -4353,6 +4353,13 @@ function init() {
       }
     } else {
       setLspState('error', '工具链解压失败，编译 / 智能提示不可用');
+      // 解压失败也要放行，否则 ensureToolchainReady() 永远等不到结果，clangd 不会启动，
+      // 用户连错误详情都看不到
+      if (toolchainReadyResolve) {
+        const r = toolchainReadyResolve;
+        toolchainReadyResolve = null;
+        r(false);
+      }
     }
   });
 

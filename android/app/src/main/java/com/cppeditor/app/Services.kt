@@ -25,7 +25,23 @@ object Services {
         files = FilesService(context, toolchain, settings)
         clangd = ClangdService(toolchain, files, settings)
         compile = CompileService(toolchain, files, settings)
-        toolchain.ensureExtracted()
+        val wasReady = toolchain.ready()
+        toolchain.ensureExtracted { ok ->
+            // 本次是首次安装 / 版本升级后的解压：解压前可能已经用「空头文件路径」
+            // 算过一次参数（clangd 兜底参数与 compile_commands.json 都是启动时定型的），
+            // 解压完成后按完整路径重建一次，并让 clangd 重启加载。
+            if (ok && !wasReady) {
+                val pd = files.projectDir
+                if (pd != null) {
+                    runCatching { writeCompileCommands(pd, toolchain, settings) }
+                    EventBus.post(
+                        "lsp:compile-db-updated",
+                        JSONStr.quote(java.io.File(pd, "compile_commands.json").absolutePath),
+                    )
+                }
+                EventBus.post("lsp:restart", "{}")
+            }
+        }
     }
 
     /** 注册某 WebView 的桥，并把 EventBus 事件转发为该页面 window.__bridgeEvent */

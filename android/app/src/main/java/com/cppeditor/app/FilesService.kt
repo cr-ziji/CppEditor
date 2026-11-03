@@ -166,6 +166,11 @@ class FilesService(
         }
         val files = treeFiles(cp)
         lastTreePaths = files.map { it.getString("path") }.toSet()
+        // 旧版本（或旧 clang 工具链）留在项目里的 compile_commands.json 会带着过期的
+        // include 路径（如 libc++ 的 c++/v1）。clangd 优先使用它而不是 fallbackFlags，
+        // 于是即使工具链已换成 GCC/libstdc++，编辑器仍找不到 <bits/stdc++.h>。
+        // 项目每次载入时按当前工具链重建一份。
+        if (toolchain.ready()) runCatching { writeCompileCommands(cp, toolchain, settings) }
         val j = JSONObject()
         j.put("projectDir", cp.absolutePath)
         j.put("files", JSONArray(files))
