@@ -1627,10 +1627,23 @@ function resolveTerminalCommand(command) {
   return findSystemCommand(command);
 }
 
+// Windows 运行环境：把预装 MinGW 的 bin 放到 PATH 最前面，
+// 让编译出的 exe 能找到 libstdc++-6.dll / libgcc_s_seh-1.dll。
+function windowsRunEnv() {
+  const binDir = path.join(getToolchainRoot(), 'bin');
+  return {
+    ...process.env,
+    PATH: binDir + path.delimiter + (process.env.PATH || ''),
+  };
+}
+
 // Windows：经 cmd start 在新控制台窗口中运行 PowerShell 执行脚本，
 // 前台运行 exe 并计时，结束后显示运行时间 + 按任意键继续。
-function launchExeWindows(exePath, dir, srcPath, compilerPath) {
+function launchExeWindows(exePath, dir, srcPath) {
   try {
+    // Dev-C++ 风格运行：PowerShell 前台运行 exe 并计时，结束后显示
+    // 「进程在 X 秒后退出，返回值为 N」+ cmd 版 pause（任意键关闭，
+    // 系统文案「请按任意键继续. . .」）。窗口标题设为当前文件。
     const tmpDir = path.join(app.getPath('temp'), 'cppeditor-run');
     fs.mkdirSync(tmpDir, { recursive: true });
     const ps1Path = path.join(tmpDir, 'run-' + Date.now() + '.ps1');
@@ -1662,7 +1675,7 @@ function launchExeWindows(exePath, dir, srcPath, compilerPath) {
       ['/c', 'start', '', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1Path],
       {
         cwd: dir,
-        env: compilerEnv(compilerPath),
+        env: windowsRunEnv(),
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
@@ -1765,7 +1778,7 @@ async function launchExeLinux(exePath, dir, srcPath, compilerPath) {
 }
 
 function launchExecutable(exePath, dir, srcPath, compilerPath) {
-  if (IS_WIN) return launchExeWindows(exePath, dir, srcPath, compilerPath);
+  if (IS_WIN) return launchExeWindows(exePath, dir, srcPath);
   if (IS_LINUX) return launchExeLinux(exePath, dir, srcPath, compilerPath);
 
   try {
